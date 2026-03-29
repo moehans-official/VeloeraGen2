@@ -1,7 +1,7 @@
 ﻿<div align="center">
   <img src="https://cloudflareimg.cdn.sn/i/695929a70c0bc_1767451047.webp" alt="Veloera CE Logo" width="180" />
-  <h1>VeloeraCE</h1>
-  <p>社区维护版 Veloera，面向生产可用与长期维护</p>
+  <h1>Veloera Gen2</h1>
+  <p>Veloera Gen2，面向生产可用</p>
   <p>
     简体中文 | <a href="./README_EN.md">English</a>
   </p>
@@ -15,7 +15,7 @@
 
 ## 项目简介
 
-`VeloeraCE (Community Edition)` 是基于 `Veloera` 继续演进的社区版 LLM API 网关，目标是：
+`VeloeraGen2` 是基于 `Veloera` 继续演进的LLM API 网关，目标是：
 
 - 持续维护原项目核心能力
 - 提升生产环境稳定性与可运维性
