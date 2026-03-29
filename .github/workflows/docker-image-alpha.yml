@@ -12,6 +12,7 @@ on:
 
 jobs:
   build_single_arch:
+    if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     name: Build & push (${{ matrix.arch }}) [native]
     strategy:
       fail-fast: false
@@ -106,6 +107,7 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
 
   create_manifests:
+    if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     name: Create multi-arch manifests (Docker Hub + GHCR)
     needs: [build_single_arch]
     runs-on: ubuntu-latest

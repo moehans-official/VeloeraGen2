@@ -20,6 +20,11 @@ func SetApiRouter(router *gin.Engine) {
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
+	// API responses are user-specific and should never be cached by browsers/proxies.
+	apiRouter.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	})
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
 		apiRouter.POST("/setup", controller.PostSetup)
@@ -125,43 +130,61 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.DELETE("/:id/bindings/:binding_type", controller.AdminClearUserBinding)
 				adminRoute.GET("/:id", controller.GetUser)
 				adminRoute.POST("/", controller.CreateUser)
-				adminRoute.POST("/manage", controller.ManageUser)
-				adminRoute.PUT("/", controller.UpdateUser)
-				adminRoute.DELETE("/:id", controller.DeleteUser)
-				adminRoute.DELETE("/:id/reset_passkey", controller.AdminResetPasskey)
+					adminRoute.POST("/manage", controller.ManageUser)
+					adminRoute.PUT("/", controller.UpdateUser)
+					adminRoute.DELETE("/:id", controller.DeleteUser)
+					adminRoute.DELETE("/:id/reset_passkey", controller.AdminResetPasskey)
 
-				// Admin 2FA routes
-				adminRoute.GET("/2fa/stats", controller.Admin2FAStats)
-				adminRoute.DELETE("/:id/2fa", controller.AdminDisable2FA)
+					// Admin 2FA routes
+					adminRoute.GET("/2fa/stats", controller.Admin2FAStats)
+					adminRoute.DELETE("/:id/2fa", controller.AdminDisable2FA)
+				}
 			}
-		}
 
-		// Subscription billing (plans, purchase, admin management)
-		subscriptionRoute := apiRouter.Group("/subscription")
-		subscriptionRoute.Use(middleware.UserAuth())
-		{
-			subscriptionRoute.GET("/plans", controller.GetSubscriptionPlans)
-			subscriptionRoute.GET("/self", controller.GetSubscriptionSelf)
-			subscriptionRoute.PUT("/self/preference", controller.UpdateSubscriptionPreference)
-			subscriptionRoute.POST("/epay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestEpay)
-			subscriptionRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestStripePay)
-			subscriptionRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestCreemPay)
-		}
-		subscriptionAdminRoute := apiRouter.Group("/subscription/admin")
-		subscriptionAdminRoute.Use(middleware.AdminAuth())
-		{
-			subscriptionAdminRoute.GET("/plans", controller.AdminListSubscriptionPlans)
-			subscriptionAdminRoute.POST("/plans", controller.AdminCreateSubscriptionPlan)
-			subscriptionAdminRoute.PUT("/plans/:id", controller.AdminUpdateSubscriptionPlan)
-			subscriptionAdminRoute.PATCH("/plans/:id", controller.AdminUpdateSubscriptionPlanStatus)
-			subscriptionAdminRoute.POST("/bind", controller.AdminBindSubscription)
+			// Veloera legacy subscription plan routes (compat)
+			planRoute := apiRouter.Group("/plan")
+			{
+				planRoute.GET("/", middleware.UserAuth(), controller.GetSubscriptionPlans)
+				planRoute.GET("/self", middleware.UserAuth(), controller.GetSubscriptionSelf)
+				planRoute.GET("/purchase", controller.LegacyPlanPurchaseNotSupported)
+				planRoute.POST("/purchase", middleware.UserAuth(), controller.LegacyPlanPurchaseNotSupported)
 
-			// User subscription management (admin)
-			subscriptionAdminRoute.GET("/users/:id/subscriptions", controller.AdminListUserSubscriptions)
-			subscriptionAdminRoute.POST("/users/:id/subscriptions", controller.AdminCreateUserSubscription)
-			subscriptionAdminRoute.POST("/user_subscriptions/:id/invalidate", controller.AdminInvalidateUserSubscription)
-			subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
-		}
+				planAdminRoute := planRoute.Group("/admin")
+				planAdminRoute.Use(middleware.AdminAuth())
+				{
+					planAdminRoute.GET("/", controller.AdminListSubscriptionPlans)
+					planAdminRoute.POST("/", controller.AdminCreateSubscriptionPlan)
+					planAdminRoute.PUT("/", controller.LegacyPlanAdminNotSupported)
+					planAdminRoute.DELETE("/:id", controller.LegacyPlanAdminNotSupported)
+				}
+			}
+
+			// Subscription billing (plans, purchase, admin management)
+			subscriptionRoute := apiRouter.Group("/subscription")
+			subscriptionRoute.Use(middleware.UserAuth())
+			{
+				subscriptionRoute.GET("/plans", controller.GetSubscriptionPlans)
+				subscriptionRoute.GET("/self", controller.GetSubscriptionSelf)
+				subscriptionRoute.PUT("/self/preference", controller.UpdateSubscriptionPreference)
+				subscriptionRoute.POST("/epay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestEpay)
+				subscriptionRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestStripePay)
+				subscriptionRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestCreemPay)
+			}
+			subscriptionAdminRoute := apiRouter.Group("/subscription/admin")
+			subscriptionAdminRoute.Use(middleware.AdminAuth())
+			{
+				subscriptionAdminRoute.GET("/plans", controller.AdminListSubscriptionPlans)
+				subscriptionAdminRoute.POST("/plans", controller.AdminCreateSubscriptionPlan)
+				subscriptionAdminRoute.PUT("/plans/:id", controller.AdminUpdateSubscriptionPlan)
+				subscriptionAdminRoute.PATCH("/plans/:id", controller.AdminUpdateSubscriptionPlanStatus)
+				subscriptionAdminRoute.POST("/bind", controller.AdminBindSubscription)
+
+				// User subscription management (admin)
+				subscriptionAdminRoute.GET("/users/:id/subscriptions", controller.AdminListUserSubscriptions)
+				subscriptionAdminRoute.POST("/users/:id/subscriptions", controller.AdminCreateUserSubscription)
+				subscriptionAdminRoute.POST("/user_subscriptions/:id/invalidate", controller.AdminInvalidateUserSubscription)
+				subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
+			}
 
 		// Subscription payment callbacks (no auth)
 		apiRouter.POST("/subscription/epay/notify", controller.SubscriptionEpayNotify)

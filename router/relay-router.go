@@ -10,67 +10,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetRelayRouter(router *gin.Engine) {
-	router.Use(middleware.CORS())
-	router.Use(middleware.DecompressRequestMiddleware())
-	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
-	router.Use(middleware.StatsMiddleware())
-	// https://platform.openai.com/docs/api-reference/introduction
-	modelsRouter := router.Group("/v1/models")
-	modelsRouter.Use(middleware.RouteTag("relay"))
-	modelsRouter.Use(middleware.TokenAuth())
-	{
-		modelsRouter.GET("", func(c *gin.Context) {
-			switch {
-			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
-				controller.ListModels(c, constant.ChannelTypeAnthropic)
-			case c.GetHeader("x-goog-api-key") != "" || c.Query("key") != "": // 单独的适配
-				controller.RetrieveModel(c, constant.ChannelTypeGemini)
-			default:
-				controller.ListModels(c, constant.ChannelTypeOpenAI)
-			}
-		})
-
-		modelsRouter.GET("/:model", func(c *gin.Context) {
-			switch {
-			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
-				controller.RetrieveModel(c, constant.ChannelTypeAnthropic)
-			default:
-				controller.RetrieveModel(c, constant.ChannelTypeOpenAI)
-			}
-		})
-	}
-
-	geminiRouter := router.Group("/v1beta/models")
-	geminiRouter.Use(middleware.RouteTag("relay"))
-	geminiRouter.Use(middleware.TokenAuth())
-	{
-		geminiRouter.GET("", func(c *gin.Context) {
-			controller.ListModels(c, constant.ChannelTypeGemini)
-		})
-	}
-
-	geminiCompatibleRouter := router.Group("/v1beta/openai/models")
-	geminiCompatibleRouter.Use(middleware.RouteTag("relay"))
-	geminiCompatibleRouter.Use(middleware.TokenAuth())
-	{
-		geminiCompatibleRouter.GET("", func(c *gin.Context) {
+func registerRelayModelsRoutes(modelsRouter *gin.RouterGroup) {
+	modelsRouter.GET("", func(c *gin.Context) {
+		switch {
+		case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
+			controller.ListModels(c, constant.ChannelTypeAnthropic)
+		case c.GetHeader("x-goog-api-key") != "" || c.Query("key") != "": // 单独的适配
+			controller.RetrieveModel(c, constant.ChannelTypeGemini)
+		default:
 			controller.ListModels(c, constant.ChannelTypeOpenAI)
-		})
-	}
+		}
+	})
 
-	playgroundRouter := router.Group("/pg")
-	playgroundRouter.Use(middleware.RouteTag("relay"))
-	playgroundRouter.Use(middleware.SystemPerformanceCheck())
-	playgroundRouter.Use(middleware.UserAuth(), middleware.Distribute())
-	{
-		playgroundRouter.POST("/chat/completions", controller.Playground)
-	}
-	relayV1Router := router.Group("/v1")
-	relayV1Router.Use(middleware.RouteTag("relay"))
-	relayV1Router.Use(middleware.SystemPerformanceCheck())
-	relayV1Router.Use(middleware.TokenAuth())
-	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	modelsRouter.GET("/:model", func(c *gin.Context) {
+		switch {
+		case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
+			controller.RetrieveModel(c, constant.ChannelTypeAnthropic)
+		default:
+			controller.RetrieveModel(c, constant.ChannelTypeOpenAI)
+		}
+	})
+}
+
+func registerRelayV1Routes(relayV1Router *gin.RouterGroup) {
 	{
 		// WebSocket 路由（统一到 Relay）
 		wsRouter := relayV1Router.Group("")
@@ -163,6 +125,72 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.POST("/fine-tunes/:id/cancel", controller.RelayNotImplemented)
 		httpRouter.GET("/fine-tunes/:id/events", controller.RelayNotImplemented)
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
+	}
+}
+
+func SetRelayRouter(router *gin.Engine) {
+	router.Use(middleware.CORS())
+	router.Use(middleware.DecompressRequestMiddleware())
+	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
+	router.Use(middleware.StatsMiddleware())
+	// https://platform.openai.com/docs/api-reference/introduction
+	modelsRouter := router.Group("/v1/models")
+	modelsRouter.Use(middleware.RouteTag("relay"))
+	modelsRouter.Use(middleware.TokenAuth())
+	{
+		registerRelayModelsRoutes(modelsRouter)
+	}
+
+	// Veloera legacy HuggingFace-compatible routes (compat)
+	hfModelsRouter := router.Group("/hf/v1/models")
+	hfModelsRouter.Use(middleware.RouteTag("relay"))
+	hfModelsRouter.Use(middleware.TokenAuth())
+	{
+		registerRelayModelsRoutes(hfModelsRouter)
+	}
+
+	geminiRouter := router.Group("/v1beta/models")
+	geminiRouter.Use(middleware.RouteTag("relay"))
+	geminiRouter.Use(middleware.TokenAuth())
+	{
+		geminiRouter.GET("", func(c *gin.Context) {
+			controller.ListModels(c, constant.ChannelTypeGemini)
+		})
+	}
+
+	geminiCompatibleRouter := router.Group("/v1beta/openai/models")
+	geminiCompatibleRouter.Use(middleware.RouteTag("relay"))
+	geminiCompatibleRouter.Use(middleware.TokenAuth())
+	{
+		geminiCompatibleRouter.GET("", func(c *gin.Context) {
+			controller.ListModels(c, constant.ChannelTypeOpenAI)
+		})
+	}
+
+	playgroundRouter := router.Group("/pg")
+	playgroundRouter.Use(middleware.RouteTag("relay"))
+	playgroundRouter.Use(middleware.SystemPerformanceCheck())
+	playgroundRouter.Use(middleware.UserAuth(), middleware.Distribute())
+	{
+		playgroundRouter.POST("/chat/completions", controller.Playground)
+	}
+	relayV1Router := router.Group("/v1")
+	relayV1Router.Use(middleware.RouteTag("relay"))
+	relayV1Router.Use(middleware.SystemPerformanceCheck())
+	relayV1Router.Use(middleware.TokenAuth())
+	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	{
+		registerRelayV1Routes(relayV1Router)
+	}
+
+	// Veloera legacy HuggingFace-compatible routes (compat)
+	relayHfV1Router := router.Group("/hf/v1")
+	relayHfV1Router.Use(middleware.RouteTag("relay"))
+	relayHfV1Router.Use(middleware.SystemPerformanceCheck())
+	relayHfV1Router.Use(middleware.TokenAuth())
+	relayHfV1Router.Use(middleware.ModelRequestRateLimit())
+	{
+		registerRelayV1Routes(relayHfV1Router)
 	}
 
 	relayMjRouter := router.Group("/mj")

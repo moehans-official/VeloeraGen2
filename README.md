@@ -1,6 +1,7 @@
 > [!NOTE]
 > This repository is **VeloeraGen2**, a downstream fork that tracks `QuantumNous/new-api` **main** to stay in sync with the latest upstream features, with minimal compatibility/branding patches.
 > 上游仓库：<https://github.com/QuantumNous/new-api>
+> GHCR 镜像：`ghcr.io/moehans-official/veloeragen2`（推荐 tag：`latest` / `main` / `sha-*`）
 
 <div align="center">
 
