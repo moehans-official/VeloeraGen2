@@ -46,6 +46,8 @@ func InitEnv() {
 		os.Exit(0)
 	}
 
+	SystemName = GetEnvOrDefaultString("SYSTEM_NAME", SystemName)
+
 	if os.Getenv("SESSION_SECRET") != "" {
 		ss := os.Getenv("SESSION_SECRET")
 		if ss == "random_string" {
