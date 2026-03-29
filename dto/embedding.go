@@ -1,20 +1,12 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package dto
+
+import (
+	"strings"
+
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/gin-gonic/gin"
+)
 
 type EmbeddingOptions struct {
 	Seed             int      `json:"seed,omitempty"`
@@ -31,18 +23,41 @@ type EmbeddingRequest struct {
 	Model            string   `json:"model"`
 	Input            any      `json:"input"`
 	EncodingFormat   string   `json:"encoding_format,omitempty"`
-	Dimensions       int      `json:"dimensions,omitempty"`
+	Dimensions       *int     `json:"dimensions,omitempty"`
 	User             string   `json:"user,omitempty"`
-	Seed             float64  `json:"seed,omitempty"`
+	Seed             *float64 `json:"seed,omitempty"`
 	Temperature      *float64 `json:"temperature,omitempty"`
-	TopP             float64  `json:"top_p,omitempty"`
-	FrequencyPenalty float64  `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float64  `json:"presence_penalty,omitempty"`
+	TopP             *float64 `json:"top_p,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 }
 
-func (r EmbeddingRequest) ParseInput() []string {
+func (r *EmbeddingRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var texts = make([]string, 0)
+
+	inputs := r.ParseInput()
+	for _, input := range inputs {
+		texts = append(texts, input)
+	}
+
+	return &types.TokenCountMeta{
+		CombineText: strings.Join(texts, "\n"),
+	}
+}
+
+func (r *EmbeddingRequest) IsStream(c *gin.Context) bool {
+	return false
+}
+
+func (r *EmbeddingRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		r.Model = modelName
+	}
+}
+
+func (r *EmbeddingRequest) ParseInput() []string {
 	if r.Input == nil {
-		return nil
+		return make([]string, 0)
 	}
 	var input []string
 	switch r.Input.(type) {

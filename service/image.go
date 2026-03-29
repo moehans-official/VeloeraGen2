@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package service
 
 import (
@@ -25,16 +9,22 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"veloera/common"
-	"veloera/constant"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 
 	"golang.org/x/image/webp"
 )
 
+// return image.Config, format, clean base64 string, error
 func DecodeBase64ImageData(base64String string) (image.Config, string, string, error) {
 	// 去除base64数据的URL前缀（如果有）
 	if idx := strings.Index(base64String, ","); idx != -1 {
 		base64String = base64String[idx+1:]
+	}
+
+	if len(base64String) == 0 {
+		return image.Config{}, "", "", errors.New("base64 string is empty")
 	}
 
 	// 将base64字符串解码为字节切片

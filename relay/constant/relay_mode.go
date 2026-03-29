@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package constant
 
 import (
@@ -28,6 +12,7 @@ const (
 	RelayModeEmbeddings
 	RelayModeModerations
 	RelayModeImagesGenerations
+	RelayModeImagesEdits
 	RelayModeEdits
 
 	RelayModeMidjourneyImagine
@@ -44,6 +29,8 @@ const (
 	RelayModeMidjourneyShorten
 	RelayModeSwapFace
 	RelayModeMidjourneyUpload
+	RelayModeMidjourneyVideo
+	RelayModeMidjourneyEdits
 
 	RelayModeAudioSpeech        // tts
 	RelayModeAudioTranscription // whisper
@@ -53,18 +40,18 @@ const (
 	RelayModeSunoFetchByID
 	RelayModeSunoSubmit
 
+	RelayModeVideoFetchByID
+	RelayModeVideoSubmit
+
 	RelayModeRerank
 
 	RelayModeResponses
 
 	RelayModeRealtime
 
-	RelayModeTokenCount
-)
+	RelayModeGemini
 
-// Keys for relayInfo.Other map
-const (
-	KeyEmbeddingInput = "embedding_input"
+	RelayModeResponsesCompact
 )
 
 func Path2RelayMode(path string) int {
@@ -73,8 +60,6 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeChatCompletions
 	} else if strings.HasPrefix(path, "/v1/completions") {
 		relayMode = RelayModeCompletions
-	} else if strings.HasPrefix(path, "/v1beta/models/") {
-		relayMode = RelayModeChatCompletions
 	} else if strings.HasPrefix(path, "/v1/embeddings") {
 		relayMode = RelayModeEmbeddings
 	} else if strings.HasSuffix(path, "embeddings") {
@@ -83,8 +68,12 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeModerations
 	} else if strings.HasPrefix(path, "/v1/images/generations") {
 		relayMode = RelayModeImagesGenerations
+	} else if strings.HasPrefix(path, "/v1/images/edits") {
+		relayMode = RelayModeImagesEdits
 	} else if strings.HasPrefix(path, "/v1/edits") {
 		relayMode = RelayModeEdits
+	} else if strings.HasPrefix(path, "/v1/responses/compact") {
+		relayMode = RelayModeResponsesCompact
 	} else if strings.HasPrefix(path, "/v1/responses") {
 		relayMode = RelayModeResponses
 	} else if strings.HasPrefix(path, "/v1/audio/speech") {
@@ -97,8 +86,10 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeRerank
 	} else if strings.HasPrefix(path, "/v1/realtime") {
 		relayMode = RelayModeRealtime
-	} else if strings.HasPrefix(path, "/v1/messages/count_tokens") {
-		relayMode = RelayModeTokenCount
+	} else if strings.HasPrefix(path, "/v1beta/models") || strings.HasPrefix(path, "/v1/models") {
+		relayMode = RelayModeGemini
+	} else if strings.HasPrefix(path, "/mj") {
+		relayMode = Path2RelayModeMidjourney(path)
 	}
 	return relayMode
 }
@@ -122,6 +113,10 @@ func Path2RelayModeMidjourney(path string) int {
 		relayMode = RelayModeMidjourneyUpload
 	} else if strings.HasSuffix(path, "/mj/submit/imagine") {
 		relayMode = RelayModeMidjourneyImagine
+	} else if strings.HasSuffix(path, "/mj/submit/video") {
+		relayMode = RelayModeMidjourneyVideo
+	} else if strings.HasSuffix(path, "/mj/submit/edits") {
+		relayMode = RelayModeMidjourneyEdits
 	} else if strings.HasSuffix(path, "/mj/submit/blend") {
 		relayMode = RelayModeMidjourneyBlend
 	} else if strings.HasSuffix(path, "/mj/submit/describe") {

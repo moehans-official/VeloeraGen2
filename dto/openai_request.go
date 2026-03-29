@@ -1,78 +1,264 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package dto
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/samber/lo"
+
+	"github.com/gin-gonic/gin"
 )
 
 type ResponseFormat struct {
-	Type       string            `json:"type,omitempty"`
-	JsonSchema *FormatJsonSchema `json:"json_schema,omitempty"`
+	Type       string          `json:"type,omitempty"`
+	JsonSchema json.RawMessage `json:"json_schema,omitempty"`
 }
 
 type FormatJsonSchema struct {
-	Description string `json:"description,omitempty"`
-	Name        string `json:"name"`
-	Schema      any    `json:"schema,omitempty"`
-	Strict      any    `json:"strict,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Name        string          `json:"name"`
+	Schema      any             `json:"schema,omitempty"`
+	Strict      json.RawMessage `json:"strict,omitempty"`
 }
 
+// GeneralOpenAIRequest represents a general request structure for OpenAI-compatible APIs.
+// 参数增加规范：无引用的参数必须使用json.RawMessage类型，并添加omitempty标签
 type GeneralOpenAIRequest struct {
 	Model               string            `json:"model,omitempty"`
 	Messages            []Message         `json:"messages,omitempty"`
 	Prompt              any               `json:"prompt,omitempty"`
 	Prefix              any               `json:"prefix,omitempty"`
 	Suffix              any               `json:"suffix,omitempty"`
-	Stream              bool              `json:"stream,omitempty"`
+	Stream              *bool             `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions    `json:"stream_options,omitempty"`
-	MaxTokens           uint              `json:"max_tokens,omitempty"`
-	MaxCompletionTokens uint              `json:"max_completion_tokens,omitempty"`
+	MaxTokens           *uint             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *uint             `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	Verbosity           json.RawMessage   `json:"verbosity,omitempty"` // gpt-5
 	Temperature         *float64          `json:"temperature,omitempty"`
-	TopP                float64           `json:"top_p,omitempty"`
-	TopK                int               `json:"top_k,omitempty"`
+	TopP                *float64          `json:"top_p,omitempty"`
+	TopK                *int              `json:"top_k,omitempty"`
 	Stop                any               `json:"stop,omitempty"`
-	N                   int               `json:"n,omitempty"`
+	N                   *int              `json:"n,omitempty"`
 	Input               any               `json:"input,omitempty"`
 	Instruction         string            `json:"instruction,omitempty"`
 	Size                string            `json:"size,omitempty"`
-	Functions           any               `json:"functions,omitempty"`
-	FrequencyPenalty    float64           `json:"frequency_penalty,omitempty"`
-	PresencePenalty     float64           `json:"presence_penalty,omitempty"`
+	Functions           json.RawMessage   `json:"functions,omitempty"`
+	FrequencyPenalty    *float64          `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64          `json:"presence_penalty,omitempty"`
 	ResponseFormat      *ResponseFormat   `json:"response_format,omitempty"`
-	EncodingFormat      any               `json:"encoding_format,omitempty"`
-	Seed                float64           `json:"seed,omitempty"`
+	EncodingFormat      json.RawMessage   `json:"encoding_format,omitempty"`
+	Seed                *float64          `json:"seed,omitempty"`
+	ParallelTooCalls    *bool             `json:"parallel_tool_calls,omitempty"`
 	Tools               []ToolCallRequest `json:"tools,omitempty"`
 	ToolChoice          any               `json:"tool_choice,omitempty"`
-	User                string            `json:"user,omitempty"`
-	LogProbs            bool              `json:"logprobs,omitempty"`
-	TopLogProbs         int               `json:"top_logprobs,omitempty"`
-	Dimensions          int               `json:"dimensions,omitempty"`
-	Modalities          any               `json:"modalities,omitempty"`
-	Audio               any               `json:"audio,omitempty"`
-	ExtraBody           any               `json:"extra_body,omitempty"`
+	FunctionCall        json.RawMessage   `json:"function_call,omitempty"`
+	User                json.RawMessage   `json:"user,omitempty"`
+	// ServiceTier specifies upstream service level and may affect billing.
+	// This field is filtered by default and can be enabled via channel setting allow_service_tier.
+	ServiceTier json.RawMessage `json:"service_tier,omitempty"`
+	LogProbs    *bool           `json:"logprobs,omitempty"`
+	TopLogProbs *int            `json:"top_logprobs,omitempty"`
+	Dimensions  *int            `json:"dimensions,omitempty"`
+	Modalities  json.RawMessage `json:"modalities,omitempty"`
+	Audio       json.RawMessage `json:"audio,omitempty"`
+	// 安全标识符，用于帮助 OpenAI 检测可能违反使用政策的应用程序用户
+	// 注意：此字段会向 OpenAI 发送用户标识信息，默认过滤，可通过 allow_safety_identifier 开启
+	SafetyIdentifier json.RawMessage `json:"safety_identifier,omitempty"`
+	// Whether or not to store the output of this chat completion request for use in our model distillation or evals products.
+	// 是否存储此次请求数据供 OpenAI 用于评估和优化产品
+	// 注意：默认允许透传，可通过 disable_store 禁用；禁用后可能导致 Codex 无法正常使用
+	Store json.RawMessage `json:"store,omitempty"`
+	// Used by OpenAI to cache responses for similar requests to optimize your cache hit rates. Replaces the user field
+	PromptCacheKey       string          `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`
+	LogitBias            json.RawMessage `json:"logit_bias,omitempty"`
+	Metadata             json.RawMessage `json:"metadata,omitempty"`
+	Prediction           json.RawMessage `json:"prediction,omitempty"`
+	// gemini
+	ExtraBody json.RawMessage `json:"extra_body,omitempty"`
+	//xai
+	SearchParameters json.RawMessage `json:"search_parameters,omitempty"`
+	// claude
+	WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
+	// OpenRouter Params
+	Usage     json.RawMessage `json:"usage,omitempty"`
+	Reasoning json.RawMessage `json:"reasoning,omitempty"`
+	// Ali Qwen Params
+	VlHighResolutionImages json.RawMessage `json:"vl_high_resolution_images,omitempty"`
+	EnableThinking         json.RawMessage `json:"enable_thinking,omitempty"`
+	ChatTemplateKwargs     json.RawMessage `json:"chat_template_kwargs,omitempty"`
+	EnableSearch           json.RawMessage `json:"enable_search,omitempty"`
+	// ollama Params
+	Think json.RawMessage `json:"think,omitempty"`
+	// baidu v2
+	WebSearch json.RawMessage `json:"web_search,omitempty"`
+	// doubao,zhipu_v4
+	THINKING json.RawMessage `json:"thinking,omitempty"`
+	// pplx Params
+	SearchDomainFilter     json.RawMessage `json:"search_domain_filter,omitempty"`
+	SearchRecencyFilter    json.RawMessage `json:"search_recency_filter,omitempty"`
+	ReturnImages           *bool           `json:"return_images,omitempty"`
+	ReturnRelatedQuestions *bool           `json:"return_related_questions,omitempty"`
+	SearchMode             json.RawMessage `json:"search_mode,omitempty"`
+	// Minimax
+	ReasoningSplit json.RawMessage `json:"reasoning_split,omitempty"`
 }
+
+// createFileSource 根据数据内容创建正确类型的 FileSource
+func createFileSource(data string) *types.FileSource {
+	if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+		return types.NewURLFileSource(data)
+	}
+	return types.NewBase64FileSource(data, "")
+}
+
+func (r *GeneralOpenAIRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var tokenCountMeta types.TokenCountMeta
+	var texts = make([]string, 0)
+	var fileMeta = make([]*types.FileMeta, 0)
+
+	if r.Prompt != nil {
+		switch v := r.Prompt.(type) {
+		case string:
+			texts = append(texts, v)
+		case []any:
+			for _, item := range v {
+				if str, ok := item.(string); ok {
+					texts = append(texts, str)
+				}
+			}
+		default:
+			texts = append(texts, fmt.Sprintf("%v", r.Prompt))
+		}
+	}
+
+	if r.Input != nil {
+		inputs := r.ParseInput()
+		texts = append(texts, inputs...)
+	}
+
+	maxTokens := lo.FromPtrOr(r.MaxTokens, uint(0))
+	maxCompletionTokens := lo.FromPtrOr(r.MaxCompletionTokens, uint(0))
+	if maxCompletionTokens > maxTokens {
+		tokenCountMeta.MaxTokens = int(maxCompletionTokens)
+	} else {
+		tokenCountMeta.MaxTokens = int(maxTokens)
+	}
+
+	for _, message := range r.Messages {
+		tokenCountMeta.MessagesCount++
+		texts = append(texts, message.Role)
+		if message.Content != nil {
+			if message.Name != nil {
+				tokenCountMeta.NameCount++
+				texts = append(texts, *message.Name)
+			}
+			arrayContent := message.ParseContent()
+			for _, m := range arrayContent {
+				if m.Type == ContentTypeImageURL {
+					imageUrl := m.GetImageMedia()
+					if imageUrl != nil && imageUrl.Url != "" {
+						source := createFileSource(imageUrl.Url)
+						fileMeta = append(fileMeta, &types.FileMeta{
+							FileType: types.FileTypeImage,
+							Source:   source,
+							Detail:   imageUrl.Detail,
+						})
+					}
+				} else if m.Type == ContentTypeInputAudio {
+					inputAudio := m.GetInputAudio()
+					if inputAudio != nil && inputAudio.Data != "" {
+						source := createFileSource(inputAudio.Data)
+						fileMeta = append(fileMeta, &types.FileMeta{
+							FileType: types.FileTypeAudio,
+							Source:   source,
+						})
+					}
+				} else if m.Type == ContentTypeFile {
+					file := m.GetFile()
+					if file != nil && file.FileData != "" {
+						source := createFileSource(file.FileData)
+						fileMeta = append(fileMeta, &types.FileMeta{
+							FileType: types.FileTypeFile,
+							Source:   source,
+						})
+					}
+				} else if m.Type == ContentTypeVideoUrl {
+					videoUrl := m.GetVideoUrl()
+					if videoUrl != nil && videoUrl.Url != "" {
+						source := createFileSource(videoUrl.Url)
+						fileMeta = append(fileMeta, &types.FileMeta{
+							FileType: types.FileTypeVideo,
+							Source:   source,
+						})
+					}
+				} else {
+					texts = append(texts, m.Text)
+				}
+			}
+		}
+	}
+
+	if r.Tools != nil {
+		openaiTools := r.Tools
+		for _, tool := range openaiTools {
+			tokenCountMeta.ToolsCount++
+			texts = append(texts, tool.Function.Name)
+			if tool.Function.Description != "" {
+				texts = append(texts, tool.Function.Description)
+			}
+			if tool.Function.Parameters != nil {
+				texts = append(texts, fmt.Sprintf("%v", tool.Function.Parameters))
+			}
+		}
+		//toolTokens := CountTokenInput(countStr, request.Model)
+		//tkm += 8
+		//tkm += toolTokens
+	}
+	tokenCountMeta.CombineText = strings.Join(texts, "\n")
+	tokenCountMeta.Files = fileMeta
+	return &tokenCountMeta
+}
+
+func (r *GeneralOpenAIRequest) IsStream(c *gin.Context) bool {
+	return lo.FromPtrOr(r.Stream, false)
+}
+
+func (r *GeneralOpenAIRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		r.Model = modelName
+	}
+}
+
+func (r *GeneralOpenAIRequest) ToMap() map[string]any {
+	result := make(map[string]any)
+	data, _ := common.Marshal(r)
+	_ = common.Unmarshal(data, &result)
+	return result
+}
+
+func (r *GeneralOpenAIRequest) GetSystemRoleName() string {
+	if strings.HasPrefix(r.Model, "o") {
+		if !strings.HasPrefix(r.Model, "o1-mini") && !strings.HasPrefix(r.Model, "o1-preview") {
+			return "developer"
+		}
+	} else if strings.HasPrefix(r.Model, "gpt-5") {
+		return "developer"
+	}
+	return "system"
+}
+
+const CustomType = "custom"
 
 type ToolCallRequest struct {
 	ID       string          `json:"id,omitempty"`
 	Type     string          `json:"type"`
-	Function FunctionRequest `json:"function"`
+	Function FunctionRequest `json:"function,omitempty"`
+	Custom   json.RawMessage `json:"custom,omitempty"`
 }
 
 type FunctionRequest struct {
@@ -84,13 +270,20 @@ type FunctionRequest struct {
 
 type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
+	// IncludeObfuscation is only for /v1/responses stream payload.
+	// This field is filtered by default and can be enabled via channel setting allow_include_obfuscation.
+	IncludeObfuscation bool `json:"include_obfuscation,omitempty"`
 }
 
-func (r GeneralOpenAIRequest) GetMaxTokens() int {
-	return int(r.MaxTokens)
+func (r *GeneralOpenAIRequest) GetMaxTokens() uint {
+	maxCompletionTokens := lo.FromPtrOr(r.MaxCompletionTokens, uint(0))
+	if maxCompletionTokens != 0 {
+		return maxCompletionTokens
+	}
+	return lo.FromPtrOr(r.MaxTokens, uint(0))
 }
 
-func (r GeneralOpenAIRequest) ParseInput() []string {
+func (r *GeneralOpenAIRequest) ParseInput() []string {
 	if r.Input == nil {
 		return nil
 	}
@@ -110,16 +303,16 @@ func (r GeneralOpenAIRequest) ParseInput() []string {
 }
 
 type Message struct {
-	Role                string          `json:"role"`
-	Content             json.RawMessage `json:"content"`
-	Name                *string         `json:"name,omitempty"`
-	Prefix              *bool           `json:"prefix,omitempty"`
-	ReasoningContent    string          `json:"reasoning_content,omitempty"`
-	Reasoning           string          `json:"reasoning,omitempty"`
-	ToolCalls           json.RawMessage `json:"tool_calls,omitempty"`
-	ToolCallId          string          `json:"tool_call_id,omitempty"`
-	parsedContent       []MediaContent
-	parsedStringContent *string
+	Role             string          `json:"role"`
+	Content          any             `json:"content"`
+	Name             *string         `json:"name,omitempty"`
+	Prefix           *bool           `json:"prefix,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
+	ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallId       string          `json:"tool_call_id,omitempty"`
+	parsedContent    []MediaContent
+	//parsedStringContent *string
 }
 
 type MediaContent struct {
@@ -128,32 +321,79 @@ type MediaContent struct {
 	ImageUrl   any    `json:"image_url,omitempty"`
 	InputAudio any    `json:"input_audio,omitempty"`
 	File       any    `json:"file,omitempty"`
+	VideoUrl   any    `json:"video_url,omitempty"`
+	// OpenRouter Params
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
 func (m *MediaContent) GetImageMedia() *MessageImageUrl {
 	if m.ImageUrl != nil {
-		return m.ImageUrl.(*MessageImageUrl)
+		if _, ok := m.ImageUrl.(*MessageImageUrl); ok {
+			return m.ImageUrl.(*MessageImageUrl)
+		}
+		if itemMap, ok := m.ImageUrl.(map[string]any); ok {
+			out := &MessageImageUrl{
+				Url:      common.Interface2String(itemMap["url"]),
+				Detail:   common.Interface2String(itemMap["detail"]),
+				MimeType: common.Interface2String(itemMap["mime_type"]),
+			}
+			return out
+		}
 	}
 	return nil
 }
 
 func (m *MediaContent) GetInputAudio() *MessageInputAudio {
 	if m.InputAudio != nil {
-		return m.InputAudio.(*MessageInputAudio)
+		if _, ok := m.InputAudio.(*MessageInputAudio); ok {
+			return m.InputAudio.(*MessageInputAudio)
+		}
+		if itemMap, ok := m.InputAudio.(map[string]any); ok {
+			out := &MessageInputAudio{
+				Data:   common.Interface2String(itemMap["data"]),
+				Format: common.Interface2String(itemMap["format"]),
+			}
+			return out
+		}
 	}
 	return nil
 }
 
 func (m *MediaContent) GetFile() *MessageFile {
 	if m.File != nil {
-		return m.File.(*MessageFile)
+		if _, ok := m.File.(*MessageFile); ok {
+			return m.File.(*MessageFile)
+		}
+		if itemMap, ok := m.File.(map[string]any); ok {
+			out := &MessageFile{
+				FileName: common.Interface2String(itemMap["file_name"]),
+				FileData: common.Interface2String(itemMap["file_data"]),
+				FileId:   common.Interface2String(itemMap["file_id"]),
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+func (m *MediaContent) GetVideoUrl() *MessageVideoUrl {
+	if m.VideoUrl != nil {
+		if _, ok := m.VideoUrl.(*MessageVideoUrl); ok {
+			return m.VideoUrl.(*MessageVideoUrl)
+		}
+		if itemMap, ok := m.VideoUrl.(map[string]any); ok {
+			out := &MessageVideoUrl{
+				Url: common.Interface2String(itemMap["url"]),
+			}
+			return out
+		}
 	}
 	return nil
 }
 
 type MessageImageUrl struct {
 	Url      string `json:"url"`
-	Detail   string `json:"detail"`
+	Detail   string `json:"detail,omitempty"`
 	MimeType string
 }
 
@@ -172,11 +412,17 @@ type MessageFile struct {
 	FileId   string `json:"file_id,omitempty"`
 }
 
+type MessageVideoUrl struct {
+	Url string `json:"url"`
+}
+
 const (
 	ContentTypeText       = "text"
 	ContentTypeImageURL   = "image_url"
 	ContentTypeInputAudio = "input_audio"
 	ContentTypeFile       = "file"
+	ContentTypeVideoUrl   = "video_url" // 阿里百炼视频识别
+	//ContentTypeAudioUrl   = "audio_url"
 )
 
 func (m *Message) GetPrefix() bool {
@@ -207,6 +453,186 @@ func (m *Message) SetToolCalls(toolCalls any) {
 }
 
 func (m *Message) StringContent() string {
+	switch m.Content.(type) {
+	case string:
+		return m.Content.(string)
+	case []any:
+		var contentStr string
+		for _, contentItem := range m.Content.([]any) {
+			contentMap, ok := contentItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			if contentMap["type"] == ContentTypeText {
+				if subStr, ok := contentMap["text"].(string); ok {
+					contentStr += subStr
+				}
+			}
+		}
+		return contentStr
+	}
+
+	return ""
+}
+
+func (m *Message) SetNullContent() {
+	m.Content = nil
+	m.parsedContent = nil
+}
+
+func (m *Message) SetStringContent(content string) {
+	m.Content = content
+	m.parsedContent = nil
+}
+
+func (m *Message) SetMediaContent(content []MediaContent) {
+	m.Content = content
+	m.parsedContent = content
+}
+
+func (m *Message) IsStringContent() bool {
+	_, ok := m.Content.(string)
+	if ok {
+		return true
+	}
+	return false
+}
+
+func (m *Message) ParseContent() []MediaContent {
+	if m.Content == nil {
+		return nil
+	}
+	if len(m.parsedContent) > 0 {
+		return m.parsedContent
+	}
+
+	var contentList []MediaContent
+	// 先尝试解析为字符串
+	content, ok := m.Content.(string)
+	if ok {
+		contentList = []MediaContent{{
+			Type: ContentTypeText,
+			Text: content,
+		}}
+		m.parsedContent = contentList
+		return contentList
+	}
+
+	// 尝试解析为数组
+	//var arrayContent []map[string]interface{}
+
+	arrayContent, ok := m.Content.([]any)
+	if !ok {
+		return contentList
+	}
+
+	for _, contentItemAny := range arrayContent {
+		mediaItem, ok := contentItemAny.(MediaContent)
+		if ok {
+			contentList = append(contentList, mediaItem)
+			continue
+		}
+
+		contentItem, ok := contentItemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		contentType, ok := contentItem["type"].(string)
+		if !ok {
+			continue
+		}
+
+		switch contentType {
+		case ContentTypeText:
+			if text, ok := contentItem["text"].(string); ok {
+				contentList = append(contentList, MediaContent{
+					Type: ContentTypeText,
+					Text: text,
+				})
+			}
+
+		case ContentTypeImageURL:
+			imageUrl := contentItem["image_url"]
+			temp := &MessageImageUrl{
+				Detail: "high",
+			}
+			switch v := imageUrl.(type) {
+			case string:
+				temp.Url = v
+			case map[string]interface{}:
+				url, ok1 := v["url"].(string)
+				detail, ok2 := v["detail"].(string)
+				if ok2 {
+					temp.Detail = detail
+				}
+				if ok1 {
+					temp.Url = url
+				}
+			}
+			contentList = append(contentList, MediaContent{
+				Type:     ContentTypeImageURL,
+				ImageUrl: temp,
+			})
+
+		case ContentTypeInputAudio:
+			if audioData, ok := contentItem["input_audio"].(map[string]interface{}); ok {
+				data, ok1 := audioData["data"].(string)
+				format, ok2 := audioData["format"].(string)
+				if ok1 && ok2 {
+					temp := &MessageInputAudio{
+						Data:   data,
+						Format: format,
+					}
+					contentList = append(contentList, MediaContent{
+						Type:       ContentTypeInputAudio,
+						InputAudio: temp,
+					})
+				}
+			}
+		case ContentTypeFile:
+			if fileData, ok := contentItem["file"].(map[string]interface{}); ok {
+				fileId, ok3 := fileData["file_id"].(string)
+				if ok3 {
+					contentList = append(contentList, MediaContent{
+						Type: ContentTypeFile,
+						File: &MessageFile{
+							FileId: fileId,
+						},
+					})
+				} else {
+					fileName, ok1 := fileData["filename"].(string)
+					fileDataStr, ok2 := fileData["file_data"].(string)
+					if ok1 && ok2 {
+						contentList = append(contentList, MediaContent{
+							Type: ContentTypeFile,
+							File: &MessageFile{
+								FileName: fileName,
+								FileData: fileDataStr,
+							},
+						})
+					}
+				}
+			}
+		case ContentTypeVideoUrl:
+			if videoUrl, ok := contentItem["video_url"].(string); ok {
+				contentList = append(contentList, MediaContent{
+					Type: ContentTypeVideoUrl,
+					VideoUrl: &MessageVideoUrl{
+						Url: videoUrl,
+					},
+				})
+			}
+		}
+	}
+
+	if len(contentList) > 0 {
+		m.parsedContent = contentList
+	}
+	return contentList
+}
+
+// old code
+/*func (m *Message) StringContent() string {
 	if m.parsedStringContent != nil {
 		return *m.parsedStringContent
 	}
@@ -360,6 +786,15 @@ func (m *Message) ParseContent() []MediaContent {
 						}
 					}
 				}
+			case ContentTypeVideoUrl:
+				if videoUrl, ok := contentItem["video_url"].(string); ok {
+					contentList = append(contentList, MediaContent{
+						Type: ContentTypeVideoUrl,
+						VideoUrl: &MessageVideoUrl{
+							Url: videoUrl,
+						},
+					})
+				}
 			}
 		}
 	}
@@ -368,60 +803,132 @@ func (m *Message) ParseContent() []MediaContent {
 		m.parsedContent = contentList
 	}
 	return contentList
+}*/
+
+type WebSearchOptions struct {
+	SearchContextSize string          `json:"search_context_size,omitempty"`
+	UserLocation      json.RawMessage `json:"user_location,omitempty"`
 }
 
-// ConvertArrayContentToString converts array content to single string if all items are text
-// Returns true if conversion was performed, false otherwise
-func (m *Message) ConvertArrayContentToString() bool {
-	// Parse the content as array once
-	var arrayContent []map[string]interface{}
-	if err := json.Unmarshal(m.Content, &arrayContent); err != nil {
-		// Not array format, no conversion needed
-		return false
-	}
-
-	// Check if all items are text type and collect text content
-	var textBuilder strings.Builder
-	for i, contentItem := range arrayContent {
-		contentType, ok := contentItem["type"].(string)
-		if !ok || contentType != ContentTypeText {
-			// Not all text content, no conversion needed
-			return false
-		}
-
-		if text, ok := contentItem["text"].(string); ok {
-			if i > 0 {
-				textBuilder.WriteString(" ")
-			}
-			textBuilder.WriteString(text)
-		}
-	}
-
-	// All items are text, perform conversion
-	m.SetStringContent(textBuilder.String())
-	return true
-}
-
+// https://platform.openai.com/docs/api-reference/responses/create
 type OpenAIResponsesRequest struct {
-	Model              string               `json:"model"`
-	Input              json.RawMessage      `json:"input,omitempty"`
-	Include            json.RawMessage      `json:"include,omitempty"`
-	Instructions       json.RawMessage      `json:"instructions,omitempty"`
-	MaxOutputTokens    uint                 `json:"max_output_tokens,omitempty"`
-	Metadata           json.RawMessage      `json:"metadata,omitempty"`
-	ParallelToolCalls  bool                 `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID string               `json:"previous_response_id,omitempty"`
-	Reasoning          *Reasoning           `json:"reasoning,omitempty"`
-	ServiceTier        string               `json:"service_tier,omitempty"`
-	Store              bool                 `json:"store,omitempty"`
-	Stream             bool                 `json:"stream,omitempty"`
-	Temperature        float64              `json:"temperature,omitempty"`
-	Text               json.RawMessage      `json:"text,omitempty"`
-	ToolChoice         json.RawMessage      `json:"tool_choice,omitempty"`
-	Tools              []ResponsesToolsCall `json:"tools,omitempty"`
-	TopP               float64              `json:"top_p,omitempty"`
-	Truncation         string               `json:"truncation,omitempty"`
-	User               string               `json:"user,omitempty"`
+	Model   string          `json:"model"`
+	Input   json.RawMessage `json:"input,omitempty"`
+	Include json.RawMessage `json:"include,omitempty"`
+	// 在后台运行推理，暂时还不支持依赖的接口
+	// Background         json.RawMessage `json:"background,omitempty"`
+	Conversation       json.RawMessage `json:"conversation,omitempty"`
+	ContextManagement  json.RawMessage `json:"context_management,omitempty"`
+	Instructions       json.RawMessage `json:"instructions,omitempty"`
+	MaxOutputTokens    *uint           `json:"max_output_tokens,omitempty"`
+	TopLogProbs        *int            `json:"top_logprobs,omitempty"`
+	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	ParallelToolCalls  json.RawMessage `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Reasoning          *Reasoning      `json:"reasoning,omitempty"`
+	// ServiceTier specifies upstream service level and may affect billing.
+	// This field is filtered by default and can be enabled via channel setting allow_service_tier.
+	ServiceTier string `json:"service_tier,omitempty"`
+	// Store controls whether upstream may store request/response data.
+	// This field is allowed by default and can be disabled via channel setting disable_store.
+	Store                json.RawMessage `json:"store,omitempty"`
+	PromptCacheKey       json.RawMessage `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`
+	// SafetyIdentifier carries client identity for policy abuse detection.
+	// This field is filtered by default and can be enabled via channel setting allow_safety_identifier.
+	SafetyIdentifier json.RawMessage `json:"safety_identifier,omitempty"`
+	Stream           *bool           `json:"stream,omitempty"`
+	StreamOptions    *StreamOptions  `json:"stream_options,omitempty"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	Text             json.RawMessage `json:"text,omitempty"`
+	ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
+	Tools            json.RawMessage `json:"tools,omitempty"` // 需要处理的参数很少，MCP 参数太多不确定，所以用 map
+	TopP             *float64        `json:"top_p,omitempty"`
+	Truncation       json.RawMessage `json:"truncation,omitempty"`
+	User             json.RawMessage `json:"user,omitempty"`
+	MaxToolCalls     *uint           `json:"max_tool_calls,omitempty"`
+	Prompt           json.RawMessage `json:"prompt,omitempty"`
+	// qwen
+	EnableThinking json.RawMessage `json:"enable_thinking,omitempty"`
+	// perplexity
+	Preset json.RawMessage `json:"preset,omitempty"`
+}
+
+func (r *OpenAIResponsesRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var fileMeta = make([]*types.FileMeta, 0)
+	var texts = make([]string, 0)
+
+	if r.Input != nil {
+		inputs := r.ParseInput()
+		for _, input := range inputs {
+			if input.Type == "input_image" {
+				if input.ImageUrl != "" {
+					fileMeta = append(fileMeta, &types.FileMeta{
+						FileType: types.FileTypeImage,
+						Source:   createFileSource(input.ImageUrl),
+						Detail:   input.Detail,
+					})
+				}
+			} else if input.Type == "input_file" {
+				if input.FileUrl != "" {
+					fileMeta = append(fileMeta, &types.FileMeta{
+						FileType: types.FileTypeFile,
+						Source:   createFileSource(input.FileUrl),
+					})
+				}
+			} else {
+				texts = append(texts, input.Text)
+			}
+		}
+	}
+
+	if len(r.Instructions) > 0 {
+		texts = append(texts, string(r.Instructions))
+	}
+
+	if len(r.Metadata) > 0 {
+		texts = append(texts, string(r.Metadata))
+	}
+
+	if len(r.Text) > 0 {
+		texts = append(texts, string(r.Text))
+	}
+
+	if len(r.ToolChoice) > 0 {
+		texts = append(texts, string(r.ToolChoice))
+	}
+
+	if len(r.Prompt) > 0 {
+		texts = append(texts, string(r.Prompt))
+	}
+
+	if len(r.Tools) > 0 {
+		texts = append(texts, string(r.Tools))
+	}
+
+	return &types.TokenCountMeta{
+		CombineText: strings.Join(texts, "\n"),
+		Files:       fileMeta,
+		MaxTokens:   int(lo.FromPtrOr(r.MaxOutputTokens, uint(0))),
+	}
+}
+
+func (r *OpenAIResponsesRequest) IsStream(c *gin.Context) bool {
+	return lo.FromPtrOr(r.Stream, false)
+}
+
+func (r *OpenAIResponsesRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		r.Model = modelName
+	}
+}
+
+func (r *OpenAIResponsesRequest) GetToolsMap() []map[string]any {
+	var toolsMap []map[string]any
+	if len(r.Tools) > 0 {
+		_ = common.Unmarshal(r.Tools, &toolsMap)
+	}
+	return toolsMap
 }
 
 type Reasoning struct {
@@ -429,21 +936,108 @@ type Reasoning struct {
 	Summary string `json:"summary,omitempty"`
 }
 
-type ResponsesToolsCall struct {
-	Type string `json:"type"`
-	// Web Search
-	UserLocation      json.RawMessage `json:"user_location,omitempty"`
-	SearchContextSize string          `json:"search_context_size,omitempty"`
-	// File Search
-	VectorStoreIds []string        `json:"vector_store_ids,omitempty"`
-	MaxNumResults  uint            `json:"max_num_results,omitempty"`
-	Filters        json.RawMessage `json:"filters,omitempty"`
-	// Computer Use
-	DisplayWidth  uint   `json:"display_width,omitempty"`
-	DisplayHeight uint   `json:"display_height,omitempty"`
-	Environment   string `json:"environment,omitempty"`
-	// Function
-	Name        string          `json:"name,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
+type Input struct {
+	Type    string          `json:"type,omitempty"`
+	Role    string          `json:"role,omitempty"`
+	Content json.RawMessage `json:"content,omitempty"`
+}
+
+type MediaInput struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	FileUrl  string `json:"file_url,omitempty"`
+	ImageUrl string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"` // 仅 input_image 有效
+}
+
+// ParseInput parses the Responses API `input` field into a normalized slice of MediaInput.
+// Reference implementation mirrors Message.ParseContent:
+//   - input can be a string, treated as an input_text item
+//   - input can be an array of objects with a `type` field
+//     supported types: input_text, input_image, input_file
+func (r *OpenAIResponsesRequest) ParseInput() []MediaInput {
+	if r.Input == nil {
+		return nil
+	}
+
+	var mediaInputs []MediaInput
+
+	// Try string first
+	// if str, ok := common.GetJsonType(r.Input); ok {
+	// 	inputs = append(inputs, MediaInput{Type: "input_text", Text: str})
+	// 	return inputs
+	// }
+	if common.GetJsonType(r.Input) == "string" {
+		var str string
+		_ = common.Unmarshal(r.Input, &str)
+		mediaInputs = append(mediaInputs, MediaInput{Type: "input_text", Text: str})
+		return mediaInputs
+	}
+
+	// Try array of parts
+	if common.GetJsonType(r.Input) == "array" {
+		var inputs []Input
+		_ = common.Unmarshal(r.Input, &inputs)
+		for _, input := range inputs {
+			if common.GetJsonType(input.Content) == "string" {
+				var str string
+				_ = common.Unmarshal(input.Content, &str)
+				mediaInputs = append(mediaInputs, MediaInput{Type: "input_text", Text: str})
+			}
+
+			if common.GetJsonType(input.Content) == "array" {
+				var array []any
+				_ = common.Unmarshal(input.Content, &array)
+				for _, itemAny := range array {
+					// Already parsed MediaContent
+					if media, ok := itemAny.(MediaInput); ok {
+						mediaInputs = append(mediaInputs, media)
+						continue
+					}
+
+					// Generic map
+					item, ok := itemAny.(map[string]any)
+					if !ok {
+						continue
+					}
+
+					typeVal, ok := item["type"].(string)
+					if !ok {
+						continue
+					}
+					switch typeVal {
+					case "input_text":
+						text, _ := item["text"].(string)
+						mediaInputs = append(mediaInputs, MediaInput{Type: "input_text", Text: text})
+					case "input_image":
+						// image_url may be string or object with url field
+						var imageUrl string
+						switch v := item["image_url"].(type) {
+						case string:
+							imageUrl = v
+						case map[string]any:
+							if url, ok := v["url"].(string); ok {
+								imageUrl = url
+							}
+						}
+						mediaInputs = append(mediaInputs, MediaInput{Type: "input_image", ImageUrl: imageUrl})
+					case "input_file":
+						// file_url may be string or object with url field
+						var fileUrl string
+						switch v := item["file_url"].(type) {
+						case string:
+							fileUrl = v
+						case map[string]any:
+							if url, ok := v["url"].(string); ok {
+								fileUrl = url
+							}
+						}
+						mediaInputs = append(mediaInputs, MediaInput{Type: "input_file", FileUrl: fileUrl})
+					}
+				}
+			}
+		}
+	}
+
+	return mediaInputs
 }

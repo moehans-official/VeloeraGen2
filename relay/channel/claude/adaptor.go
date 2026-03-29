@@ -1,41 +1,27 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package claude
 
 import (
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
-	"veloera/dto"
-	"veloera/relay/channel"
-	relaycommon "veloera/relay/common"
-	"veloera/relay/constant"
-	"veloera/setting/model_setting"
-)
+	"net/url"
 
-const (
-	RequestModeMessage    = 1
-	RequestModeTokenCount = 2
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/relay/channel"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/gin-gonic/gin"
 )
 
 type Adaptor struct {
-	RequestMode int
+}
+
+func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
+	//TODO implement me
+	return nil, errors.New("not implemented")
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
@@ -53,21 +39,44 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
-	switch info.RelayMode {
-	case constant.RelayModeTokenCount:
-		a.RequestMode = RequestModeTokenCount
-	default:
-		a.RequestMode = RequestModeMessage
-	}
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	switch a.RequestMode {
-	case RequestModeTokenCount:
-		return fmt.Sprintf("%s/v1/messages/count_tokens", info.BaseUrl), nil
-	default:
-		return fmt.Sprintf("%s/v1/messages", info.BaseUrl), nil
+	requestURL := fmt.Sprintf("%s/v1/messages", info.ChannelBaseUrl)
+	if !shouldAppendClaudeBetaQuery(info) {
+		return requestURL, nil
 	}
+
+	parsedURL, err := url.Parse(requestURL)
+	if err != nil {
+		return "", err
+	}
+	query := parsedURL.Query()
+	query.Set("beta", "true")
+	parsedURL.RawQuery = query.Encode()
+	return parsedURL.String(), nil
+}
+
+func shouldAppendClaudeBetaQuery(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	if info.IsClaudeBetaQuery {
+		return true
+	}
+	if info.ChannelOtherSettings.ClaudeBetaQuery {
+		return true
+	}
+	return false
+}
+
+func CommonClaudeHeadersOperation(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) {
+	// common headers operation
+	anthropicBeta := c.Request.Header.Get("anthropic-beta")
+	if anthropicBeta != "" {
+		req.Set("anthropic-beta", anthropicBeta)
+	}
+	model_setting.GetClaudeSettings().WriteHeaders(info.OriginModelName, req)
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
@@ -78,7 +87,7 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 		anthropicVersion = "2023-06-01"
 	}
 	req.Set("anthropic-version", anthropicVersion)
-	model_setting.GetClaudeSettings().WriteHeaders(info.OriginModelName, req)
+	CommonClaudeHeadersOperation(c, req, info)
 	return nil
 }
 
@@ -86,18 +95,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-
-	// Convert message content arrays to strings if they only contain text content
-	for i := range request.Messages {
-		request.Messages[i].ConvertArrayContentToString()
-	}
-
-	switch a.RequestMode {
-	case RequestModeTokenCount:
-		return RequestOpenAI2ClaudeTokenCount(*request)
-	default:
-		return RequestOpenAI2ClaudeMessage(*request)
-	}
+	return RequestOpenAI2ClaudeMessage(c, *request)
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -118,18 +116,13 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 
-func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *dto.OpenAIErrorWithStatusCode) {
-	switch a.RequestMode {
-	case RequestModeTokenCount:
-		err, usage = ClaudeTokenCountHandler(c, resp, info)
-	default:
-		if info.IsStream {
-			err, usage = ClaudeStreamHandler(c, resp, info, a.RequestMode)
-		} else {
-			err, usage = ClaudeHandler(c, resp, a.RequestMode, info)
-		}
+func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	info.FinalRequestRelayFormat = types.RelayFormatClaude
+	if info.IsStream {
+		return ClaudeStreamHandler(c, resp, info)
+	} else {
+		return ClaudeHandler(c, resp, info)
 	}
-	return
 }
 
 func (a *Adaptor) GetModelList() []string {

@@ -1,26 +1,30 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package minimax
 
 import (
 	"fmt"
-	relaycommon "veloera/relay/common"
+
+	channelconstant "github.com/QuantumNous/new-api/constant"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/types"
 )
 
 func GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	return fmt.Sprintf("%s/v1/text/chatcompletion_v2", info.BaseUrl), nil
+	baseUrl := info.ChannelBaseUrl
+	if baseUrl == "" {
+		baseUrl = channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeMiniMax]
+	}
+	switch info.RelayFormat {
+	case types.RelayFormatClaude:
+		return fmt.Sprintf("%s/anthropic/v1/messages", info.ChannelBaseUrl), nil
+	default:
+		switch info.RelayMode {
+		case constant.RelayModeChatCompletions:
+			return fmt.Sprintf("%s/v1/text/chatcompletion_v2", baseUrl), nil
+		case constant.RelayModeAudioSpeech:
+			return fmt.Sprintf("%s/v1/t2a_v2", baseUrl), nil
+		default:
+			return "", fmt.Errorf("unsupported relay mode: %d", info.RelayMode)
+		}
+	}
 }

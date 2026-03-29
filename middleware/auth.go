@@ -1,29 +1,22 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package middleware
 
 import (
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-gonic/gin"
+	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"veloera/common"
-	"veloera/model"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
 )
 
 func validUserInfo(username string, role int) bool {
@@ -80,12 +73,12 @@ func authHelper(c *gin.Context, minRole int) {
 			return
 		}
 	}
-	// get header Veloera-User
-	apiUserIdStr := c.Request.Header.Get("Veloera-User")
+	// get header New-Api-User
+	apiUserIdStr := c.Request.Header.Get("New-Api-User")
 	if apiUserIdStr == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
-			"message": "无权进行此操作，未提供 Veloera-User",
+			"message": "无权进行此操作，未提供 New-Api-User",
 		})
 		c.Abort()
 		return
@@ -94,7 +87,7 @@ func authHelper(c *gin.Context, minRole int) {
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
-			"message": "无权进行此操作，Veloera-User 格式错误",
+			"message": "无权进行此操作，New-Api-User 格式错误",
 		})
 		c.Abort()
 		return
@@ -103,7 +96,7 @@ func authHelper(c *gin.Context, minRole int) {
 	if id != apiUserId {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
-			"message": "无权进行此操作，Veloera-User 与登录用户不匹配",
+			"message": "无权进行此操作，New-Api-User 与登录用户不匹配",
 		})
 		c.Abort()
 		return
@@ -132,11 +125,15 @@ func authHelper(c *gin.Context, minRole int) {
 		c.Abort()
 		return
 	}
+	// 防止不同newapi版本冲突，导致数据不通用
+	c.Header("Auth-Version", "864b7076dbcd0a3c01b5520316720ebf")
 	c.Set("username", username)
 	c.Set("role", role)
 	c.Set("id", id)
 	c.Set("group", session.Get("group"))
+	c.Set("user_group", session.Get("group"))
 	c.Set("use_access_token", useAccessToken)
+
 	c.Next()
 }
 
@@ -173,6 +170,81 @@ func WssAuth(c *gin.Context) {
 
 }
 
+// TokenOrUserAuth allows either session-based user auth or API token auth.
+// Used for endpoints that need to be accessible from both the dashboard and API clients.
+func TokenOrUserAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		// Try session auth first (dashboard users)
+		session := sessions.Default(c)
+		if id := session.Get("id"); id != nil {
+			if status, ok := session.Get("status").(int); ok && status == common.UserStatusEnabled {
+				c.Set("id", id)
+				c.Next()
+				return
+			}
+		}
+		// Fall back to token auth (API clients)
+		TokenAuth()(c)
+	}
+}
+
+// TokenAuthReadOnly 宽松版本的令牌认证中间件，用于只读查询接口。
+// 只验证令牌 key 是否存在，不检查令牌状态、过期时间和额度。
+// 即使令牌已过期、已耗尽或已禁用，也允许访问。
+// 仍然检查用户是否被封禁。
+func TokenAuthReadOnly() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		key := c.Request.Header.Get("Authorization")
+		if key == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": "未提供 Authorization 请求头",
+			})
+			c.Abort()
+			return
+		}
+		if strings.HasPrefix(key, "Bearer ") || strings.HasPrefix(key, "bearer ") {
+			key = strings.TrimSpace(key[7:])
+		}
+		key = strings.TrimPrefix(key, "sk-")
+		parts := strings.Split(key, "-")
+		key = parts[0]
+
+		token, err := model.GetTokenByKey(key, false)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": "无效的令牌",
+			})
+			c.Abort()
+			return
+		}
+
+		userCache, err := model.GetUserCache(token.UserId)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			c.Abort()
+			return
+		}
+		if userCache.Status != common.UserStatusEnabled {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "用户已被封禁",
+			})
+			c.Abort()
+			return
+		}
+
+		c.Set("id", token.UserId)
+		c.Set("token_id", token.Id)
+		c.Set("token_key", token.Key)
+		c.Next()
+	}
+}
+
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		// 先检测是否为ws
@@ -190,27 +262,37 @@ func TokenAuth() func(c *gin.Context) {
 			}
 			c.Request.Header.Set("Authorization", "Bearer "+key)
 		}
-		// 检查path包含/v1/messages
-		if strings.Contains(c.Request.URL.Path, "/v1/messages") {
-			// 从x-api-key中获取key
-			key := c.Request.Header.Get("x-api-key")
-			if key != "" {
-				c.Request.Header.Set("Authorization", "Bearer "+key)
+		// 检查path包含/v1/messages 或 /v1/models
+		if strings.Contains(c.Request.URL.Path, "/v1/messages") || strings.Contains(c.Request.URL.Path, "/v1/models") {
+			anthropicKey := c.Request.Header.Get("x-api-key")
+			if anthropicKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+anthropicKey)
 			}
 		}
-		if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") {
-			if key := c.Query("key"); key != "" {
-				c.Request.Header.Set("Authorization", "Bearer "+key)
-			} else if key := c.Request.Header.Get("x-goog-api-key"); key != "" {
-				c.Request.Header.Set("Authorization", "Bearer "+key)
+		// gemini api 从query中获取key
+		if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||
+			strings.HasPrefix(c.Request.URL.Path, "/v1beta/openai/models") ||
+			strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+			skKey := c.Query("key")
+			if skKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+skKey)
+			}
+			// 从x-goog-api-key header中获取key
+			xGoogKey := c.Request.Header.Get("x-goog-api-key")
+			if xGoogKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+xGoogKey)
 			}
 		}
 		key := c.Request.Header.Get("Authorization")
 		parts := make([]string, 0)
-		key = strings.TrimPrefix(key, "Bearer ")
+		if strings.HasPrefix(key, "Bearer ") || strings.HasPrefix(key, "bearer ") {
+			key = strings.TrimSpace(key[7:])
+		}
 		if key == "" || key == "midjourney-proxy" {
 			key = c.Request.Header.Get("mj-api-secret")
-			key = strings.TrimPrefix(key, "Bearer ")
+			if strings.HasPrefix(key, "Bearer ") || strings.HasPrefix(key, "bearer ") {
+				key = strings.TrimSpace(key[7:])
+			}
 			key = strings.TrimPrefix(key, "sk-")
 			parts = strings.Split(key, "-")
 			key = parts[0]
@@ -230,6 +312,23 @@ func TokenAuth() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusUnauthorized, err.Error())
 			return
 		}
+
+		allowIps := token.GetIpLimits()
+		if len(allowIps) > 0 {
+			clientIp := c.ClientIP()
+			logger.LogDebug(c, "Token has IP restrictions, checking client IP %s", clientIp)
+			ip := net.ParseIP(clientIp)
+			if ip == nil {
+				abortWithOpenAiMessage(c, http.StatusForbidden, "无法解析客户端 IP 地址")
+				return
+			}
+			if common.IsIpInCIDRList(ip, allowIps) == false {
+				abortWithOpenAiMessage(c, http.StatusForbidden, "您的 IP 不在令牌允许访问的列表中", types.ErrorCodeAccessDenied)
+				return
+			}
+			logger.LogDebug(c, "Client IP %s passed the token IP restrictions check", clientIp)
+		}
+
 		userCache, err := model.GetUserCache(token.UserId)
 		if err != nil {
 			abortWithOpenAiMessage(c, http.StatusInternalServerError, err.Error())
@@ -243,34 +342,61 @@ func TokenAuth() func(c *gin.Context) {
 
 		userCache.WriteContext(c)
 
-		c.Set("id", token.UserId)
-		c.Set("token_id", token.Id)
-		c.Set("token_key", token.Key)
-		c.Set("token_name", token.Name)
-		c.Set("token_unlimited_quota", token.UnlimitedQuota)
-		if !token.UnlimitedQuota {
-			c.Set("token_quota", token.RemainQuota)
-		}
-		c.Set("token_rate_limit_enabled", token.RateLimitEnabled)
-		c.Set("token_rate_limit_period", token.RateLimitPeriod)
-		c.Set("token_rate_limit_count", token.RateLimitCount)
-		c.Set("token_rate_limit_success", token.RateLimitSuccess)
-		if token.ModelLimitsEnabled {
-			c.Set("token_model_limit_enabled", true)
-			c.Set("token_model_limit", token.GetModelLimitsMap())
-		} else {
-			c.Set("token_model_limit_enabled", false)
-		}
-		c.Set("allow_ips", token.GetIpLimitsMap())
-		c.Set("token_group", token.Group)
-		if len(parts) > 1 {
-			if model.IsAdmin(token.UserId) {
-				c.Set("specific_channel_id", parts[1])
-			} else {
-				abortWithOpenAiMessage(c, http.StatusForbidden, "普通用户不支持指定渠道")
+		userGroup := userCache.Group
+		tokenGroup := token.Group
+		if tokenGroup != "" {
+			// check common.UserUsableGroups[userGroup]
+			if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
+				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", tokenGroup))
 				return
 			}
+			// check group in common.GroupRatio
+			if !ratio_setting.ContainsGroupRatio(tokenGroup) {
+				if tokenGroup != "auto" {
+					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", tokenGroup))
+					return
+				}
+			}
+			userGroup = tokenGroup
+		}
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
+
+		err = SetupContextForToken(c, token, parts...)
+		if err != nil {
+			return
 		}
 		c.Next()
 	}
+}
+
+func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) error {
+	if token == nil {
+		return fmt.Errorf("token is nil")
+	}
+	c.Set("id", token.UserId)
+	c.Set("token_id", token.Id)
+	c.Set("token_key", token.Key)
+	c.Set("token_name", token.Name)
+	c.Set("token_unlimited_quota", token.UnlimitedQuota)
+	if !token.UnlimitedQuota {
+		c.Set("token_quota", token.RemainQuota)
+	}
+	if token.ModelLimitsEnabled {
+		c.Set("token_model_limit_enabled", true)
+		c.Set("token_model_limit", token.GetModelLimitsMap())
+	} else {
+		c.Set("token_model_limit_enabled", false)
+	}
+	common.SetContextKey(c, constant.ContextKeyTokenGroup, token.Group)
+	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
+	if len(parts) > 1 {
+		if model.IsAdmin(token.UserId) {
+			c.Set("specific_channel_id", parts[1])
+		} else {
+			c.Header("specific_channel_version", "701e3ae1dc3f7975556d354e0675168d004891c8")
+			abortWithOpenAiMessage(c, http.StatusForbidden, "普通用户不支持指定渠道")
+			return fmt.Errorf("普通用户不支持指定渠道")
+		}
+	}
+	return nil
 }

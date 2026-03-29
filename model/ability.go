@@ -1,29 +1,16 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package model
 
 import (
 	"errors"
 	"fmt"
 	"strings"
-	"veloera/common"
+	"sync"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Ability struct {
@@ -36,10 +23,25 @@ type Ability struct {
 	Tag       *string `json:"tag" gorm:"index"`
 }
 
-func GetGroupModels(group string) []string {
+type AbilityWithChannel struct {
+	Ability
+	ChannelType int `json:"channel_type"`
+}
+
+func GetAllEnableAbilityWithChannels() ([]AbilityWithChannel, error) {
+	var abilities []AbilityWithChannel
+	err := DB.Table("abilities").
+		Select("abilities.*, channels.type as channel_type").
+		Joins("left join channels on abilities.channel_id = channels.id").
+		Where("abilities.enabled = ?", true).
+		Scan(&abilities).Error
+	return abilities, err
+}
+
+func GetGroupEnabledModels(group string) []string {
 	var models []string
 	// Find distinct models
-	DB.Table("abilities").Where(groupCol+" = ? and enabled = ?", group, true).Distinct("model").Pluck("model", &models)
+	DB.Table("abilities").Where(commonGroupCol+" = ? and enabled = ?", group, true).Distinct("model").Pluck("model", &models)
 	return models
 }
 
@@ -56,33 +58,12 @@ func GetAllEnableAbilities() []Ability {
 	return abilities
 }
 
-// getModelCondition returns the appropriate model condition string for case-sensitive comparison
-func getModelCondition() string {
-	if common.UsingMySQL {
-		// MySQL: Use BINARY for case-sensitive comparison
-		return "BINARY model = ?"
-	} else if common.UsingPostgreSQL {
-		// PostgreSQL: Default is case-sensitive, but explicitly use COLLATE "C" for consistency
-		return "model COLLATE \"C\" = ?"
-	} else if common.UsingSQLite {
-		// SQLite: Default BINARY collation is case-sensitive, but make it explicit
-		return "model COLLATE BINARY = ?"
-	}
-	return "model = ?"
-}
-
 func getPriority(group string, model string, retry int) (int, error) {
-	trueVal := "1"
-	if common.UsingPostgreSQL {
-		trueVal = "true"
-	}
-
-	modelCondition := getModelCondition()
 
 	var priorities []int
 	err := DB.Model(&Ability{}).
 		Select("DISTINCT(priority)").
-		Where(groupCol+" = ? and "+modelCondition+" and enabled = "+trueVal, group, model).
+		Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).
 		Order("priority DESC").              // 按优先级降序排序
 		Pluck("priority", &priorities).Error // Pluck用于将查询的结果直接扫描到一个切片中
 
@@ -107,55 +88,37 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
-func getChannelQuery(group string, model string, retry int) *gorm.DB {
-	trueVal := "1"
-	if common.UsingPostgreSQL {
-		trueVal = "true"
-	}
-
-	modelCondition := getModelCondition()
-
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(groupCol+" = ? and "+modelCondition+" and enabled = "+trueVal, group, model)
-	channelQuery := DB.Where(groupCol+" = ? and "+modelCondition+" and enabled = "+trueVal+" and priority = (?)", group, model, maxPrioritySubQuery)
+func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
+	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
 	if retry != 0 {
 		priority, err := getPriority(group, model, retry)
 		if err != nil {
-			common.SysError(fmt.Sprintf("Get priority failed: %s", err.Error()))
+			return nil, err
 		} else {
-			channelQuery = DB.Where(groupCol+" = ? and "+modelCondition+" and enabled = "+trueVal+" and priority = ?", group, model, priority)
+			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
 		}
 	}
 
-	return channelQuery
+	return channelQuery, nil
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel, error) {
-	// 调用全局模型映射服务，将虚拟模型名转换为实际模型名
-	actualModel, err := GetActualModel(model)
-	if err != nil {
-		common.SysError(fmt.Sprintf("Model mapping failed: Virtual Model=%s, Error=%s", model, err.Error()))
-		return nil, fmt.Errorf("Model mapping failed: %w", err)
-	}
-
-	// 记录模型映射日志
-	if actualModel != model {
-		common.SysLog(fmt.Sprintf("Model Mapping: Virtual Model=%s -> Actual model=%s", model, actualModel))
-	}
-
+func GetChannel(group string, model string, retry int) (*Channel, error) {
 	var abilities []Ability
 
-	var dbErr error = nil
-	channelQuery := getChannelQuery(group, actualModel, retry)
+	var err error = nil
+	channelQuery, err := getChannelQuery(group, model, retry)
+	if err != nil {
+		return nil, err
+	}
 	if common.UsingSQLite || common.UsingPostgreSQL {
-		dbErr = channelQuery.Order("weight DESC").Find(&abilities).Error
+		err = channelQuery.Order("weight DESC").Find(&abilities).Error
 	} else {
-		dbErr = channelQuery.Order("weight DESC").Find(&abilities).Error
+		err = channelQuery.Order("weight DESC").Find(&abilities).Error
 	}
-	if dbErr != nil {
-		common.SysError(fmt.Sprintf("查询渠道能力失败: group=%s, model=%s, 错误=%s", group, actualModel, dbErr.Error()))
-		return nil, dbErr
+	if err != nil {
+		return nil, err
 	}
-
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -174,25 +137,24 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 			}
 		}
 	} else {
-		common.SysError(fmt.Sprintf("没有找到可用渠道: group=%s, model=%s", group, actualModel))
-		return nil, errors.New("no channels available")
+		return nil, nil
 	}
-
-	dbErr = DB.First(&channel, "id = ?", channel.Id).Error
-	if dbErr != nil {
-		common.SysError(fmt.Sprintf("查询渠道信息失败: channel_id=%d, 错误=%s", channel.Id, dbErr.Error()))
-		return nil, dbErr
-	}
-
-	return &channel, dbErr
+	err = DB.First(&channel, "id = ?", channel.Id).Error
+	return &channel, err
 }
 
-func (channel *Channel) AddAbilities() error {
+func (channel *Channel) AddAbilities(tx *gorm.DB) error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")
+	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
 		for _, group := range groups_ {
+			key := group + "|" + model
+			if _, exists := abilitySet[key]; exists {
+				continue
+			}
+			abilitySet[key] = struct{}{}
 			ability := Ability{
 				Group:     group,
 				Model:     model,
@@ -208,8 +170,13 @@ func (channel *Channel) AddAbilities() error {
 	if len(abilities) == 0 {
 		return nil
 	}
+	// choose DB or provided tx
+	useDB := DB
+	if tx != nil {
+		useDB = tx
+	}
 	for _, chunk := range lo.Chunk(abilities, 50) {
-		err := DB.Create(&chunk).Error
+		err := useDB.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
 		if err != nil {
 			return err
 		}
@@ -251,9 +218,15 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 	// Then add new abilities
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")
+	abilitySet := make(map[string]struct{})
 	abilities := make([]Ability, 0, len(models_))
 	for _, model := range models_ {
 		for _, group := range groups_ {
+			key := group + "|" + model
+			if _, exists := abilitySet[key]; exists {
+				continue
+			}
+			abilitySet[key] = struct{}{}
 			ability := Ability{
 				Group:     group,
 				Model:     model,
@@ -269,7 +242,7 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 
 	if len(abilities) > 0 {
 		for _, chunk := range lo.Chunk(abilities, 50) {
-			err = tx.Create(&chunk).Error
+			err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&chunk).Error
 			if err != nil {
 				if isNewTx {
 					tx.Rollback()
@@ -309,49 +282,60 @@ func UpdateAbilityByTag(tag string, newTag *string, priority *int64, weight *uin
 	return DB.Model(&Ability{}).Where("tag = ?", tag).Updates(ability).Error
 }
 
-func FixAbility() (int, error) {
-	var channelIds []int
-	count := 0
-	// Find all channel ids from channel table
-	err := DB.Model(&Channel{}).Pluck("id", &channelIds).Error
-	if err != nil {
-		common.SysError(fmt.Sprintf("Get channel ids from channel table failed: %s", err.Error()))
-		return 0, err
-	}
-	// Delete abilities of channels that are not in channel table
-	err = DB.Where("channel_id NOT IN (?)", channelIds).Delete(&Ability{}).Error
-	if err != nil {
-		common.SysError(fmt.Sprintf("Delete abilities of channels that are not in channel table failed: %s", err.Error()))
-		return 0, err
-	}
-	common.SysLog(fmt.Sprintf("Delete abilities of channels that are not in channel table successfully, ids: %v", channelIds))
-	count += len(channelIds)
+var fixLock = sync.Mutex{}
 
-	// Use channelIds to find channel not in abilities table
-	var abilityChannelIds []int
-	err = DB.Table("abilities").Distinct("channel_id").Pluck("channel_id", &abilityChannelIds).Error
-	if err != nil {
-		common.SysError(fmt.Sprintf("Get channel ids from abilities table failed: %s", err.Error()))
-		return 0, err
+func FixAbility() (int, int, error) {
+	lock := fixLock.TryLock()
+	if !lock {
+		return 0, 0, errors.New("已经有一个修复任务在运行中，请稍后再试")
 	}
-	var channels []Channel
-	if len(abilityChannelIds) == 0 {
-		err = DB.Find(&channels).Error
-	} else {
-		err = DB.Where("id NOT IN (?)", abilityChannelIds).Find(&channels).Error
-	}
-	if err != nil {
-		return 0, err
-	}
-	for _, channel := range channels {
-		err := channel.UpdateAbilities(nil)
+	defer fixLock.Unlock()
+
+	// truncate abilities table
+	if common.UsingSQLite {
+		err := DB.Exec("DELETE FROM abilities").Error
 		if err != nil {
-			common.SysError(fmt.Sprintf("Update abilities of channel %d failed: %s", channel.Id, err.Error()))
-		} else {
-			common.SysLog(fmt.Sprintf("Update abilities of channel %d successfully", channel.Id))
-			count++
+			common.SysLog(fmt.Sprintf("Delete abilities failed: %s", err.Error()))
+			return 0, 0, err
+		}
+	} else {
+		err := DB.Exec("TRUNCATE TABLE abilities").Error
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Truncate abilities failed: %s", err.Error()))
+			return 0, 0, err
+		}
+	}
+	var channels []*Channel
+	// Find all channels
+	err := DB.Model(&Channel{}).Find(&channels).Error
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(channels) == 0 {
+		return 0, 0, nil
+	}
+	successCount := 0
+	failCount := 0
+	for _, chunk := range lo.Chunk(channels, 50) {
+		ids := lo.Map(chunk, func(c *Channel, _ int) int { return c.Id })
+		// Delete all abilities of this channel
+		err = DB.Where("channel_id IN ?", ids).Delete(&Ability{}).Error
+		if err != nil {
+			common.SysLog(fmt.Sprintf("Delete abilities failed: %s", err.Error()))
+			failCount += len(chunk)
+			continue
+		}
+		// Then add new abilities
+		for _, channel := range chunk {
+			err = channel.AddAbilities(nil)
+			if err != nil {
+				common.SysLog(fmt.Sprintf("Add abilities for channel %d failed: %s", channel.Id, err.Error()))
+				failCount++
+			} else {
+				successCount++
+			}
 		}
 	}
 	InitChannelCache()
-	return count, nil
+	return successCount, failCount, nil
 }

@@ -1,31 +1,31 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package zhipu
 
 import (
-	"github.com/golang-jwt/jwt"
+	"bufio"
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
-	"veloera/common"
-	"veloera/dto"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/samber/lo"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// https://docs.bigmodel.cn/api-reference/%E6%A8%A1%E5%9E%8B-api/%E5%AF%B9%E8%AF%9D%E8%A1%A5%E5%85%A8
+// https://open.bigmodel.cn/doc/api#chatglm_std
+// chatglm_std, chatglm_lite
+// https://open.bigmodel.cn/api/paas/v3/model-api/chatglm_std/invoke
+// https://open.bigmodel.cn/api/paas/v3/model-api/chatglm_std/sse-invoke
 
 var zhipuTokens sync.Map
 var expSeconds int64 = 24 * 3600
@@ -33,7 +33,7 @@ var expSeconds int64 = 24 * 3600
 func getZhipuToken(apikey string) string {
 	data, ok := zhipuTokens.Load(apikey)
 	if ok {
-		tokenData := data.(tokenData)
+		tokenData := data.(zhipuTokenData)
 		if time.Now().Before(tokenData.ExpiryTime) {
 			return tokenData.Token
 		}
@@ -41,7 +41,7 @@ func getZhipuToken(apikey string) string {
 
 	split := strings.Split(apikey, ".")
 	if len(split) != 2 {
-		common.SysError("invalid zhipu key: " + apikey)
+		common.SysLog("invalid zhipu key: " + apikey)
 		return ""
 	}
 
@@ -69,7 +69,7 @@ func getZhipuToken(apikey string) string {
 		return ""
 	}
 
-	zhipuTokens.Store(apikey, tokenData{
+	zhipuTokens.Store(apikey, zhipuTokenData{
 		Token:      tokenString,
 		ExpiryTime: expiryTime,
 	})
@@ -77,58 +77,172 @@ func getZhipuToken(apikey string) string {
 	return tokenString
 }
 
-func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIRequest {
-	messages := make([]dto.Message, 0, len(request.Messages))
+func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *ZhipuRequest {
+	messages := make([]ZhipuMessage, 0, len(request.Messages))
 	for _, message := range request.Messages {
-		if !message.IsStringContent() {
-			mediaMessages := message.ParseContent()
-			for _, mediaMessage := range mediaMessages {
-				if mediaMessage.Type == dto.ContentTypeImageURL {
-					imageUrl := mediaMessage.GetImageMedia()
-					// check if base64
-					if strings.HasPrefix(imageUrl.Url, "data:image/") {
-						// 去除base64数据的URL前缀（如果有）
-						if idx := strings.Index(imageUrl.Url, ","); idx != -1 {
-							imageUrl.Url = imageUrl.Url[idx+1:]
-						}
-					}
-				}
-			}
-			message.SetMediaContent(mediaMessages)
-		}
-		messages = append(messages, dto.Message{
-			Role:       message.Role,
-			Content:    message.Content,
-			ToolCalls:  message.ToolCalls,
-			ToolCallId: message.ToolCallId,
-		})
-	}
-	var Stop []string
-	if request.Stop != nil {
-		switch v := request.Stop.(type) {
-		case string:
-			if v != "" {
-				Stop = []string{v}
-			}
-		case []string:
-			Stop = v
-		case []any:
-			for _, item := range v {
-				if s, ok := item.(string); ok {
-					Stop = append(Stop, s)
-				}
-			}
+		if message.Role == "system" {
+			messages = append(messages, ZhipuMessage{
+				Role:    "system",
+				Content: message.StringContent(),
+			})
+			messages = append(messages, ZhipuMessage{
+				Role:    "user",
+				Content: "Okay",
+			})
+		} else {
+			messages = append(messages, ZhipuMessage{
+				Role:    message.Role,
+				Content: message.StringContent(),
+			})
 		}
 	}
-	return &dto.GeneralOpenAIRequest{
-		Model:       request.Model,
-		Stream:      request.Stream,
-		Messages:    messages,
+	return &ZhipuRequest{
+		Prompt:      messages,
 		Temperature: request.Temperature,
-		TopP:        request.TopP,
-		MaxTokens:   request.MaxTokens,
-		Stop:        Stop,
-		Tools:       request.Tools,
-		ToolChoice:  request.ToolChoice,
+		TopP:        lo.FromPtrOr(request.TopP, 0),
+		Incremental: false,
 	}
+}
+
+func responseZhipu2OpenAI(response *ZhipuResponse) *dto.OpenAITextResponse {
+	fullTextResponse := dto.OpenAITextResponse{
+		Id:      response.Data.TaskId,
+		Object:  "chat.completion",
+		Created: common.GetTimestamp(),
+		Choices: make([]dto.OpenAITextResponseChoice, 0, len(response.Data.Choices)),
+		Usage:   response.Data.Usage,
+	}
+	for i, choice := range response.Data.Choices {
+		openaiChoice := dto.OpenAITextResponseChoice{
+			Index: i,
+			Message: dto.Message{
+				Role:    choice.Role,
+				Content: strings.Trim(choice.Content, "\""),
+			},
+			FinishReason: "",
+		}
+		if i == len(response.Data.Choices)-1 {
+			openaiChoice.FinishReason = "stop"
+		}
+		fullTextResponse.Choices = append(fullTextResponse.Choices, openaiChoice)
+	}
+	return &fullTextResponse
+}
+
+func streamResponseZhipu2OpenAI(zhipuResponse string) *dto.ChatCompletionsStreamResponse {
+	var choice dto.ChatCompletionsStreamResponseChoice
+	choice.Delta.SetContentString(zhipuResponse)
+	response := dto.ChatCompletionsStreamResponse{
+		Object:  "chat.completion.chunk",
+		Created: common.GetTimestamp(),
+		Model:   "chatglm",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{choice},
+	}
+	return &response
+}
+
+func streamMetaResponseZhipu2OpenAI(zhipuResponse *ZhipuStreamMetaResponse) (*dto.ChatCompletionsStreamResponse, *dto.Usage) {
+	var choice dto.ChatCompletionsStreamResponseChoice
+	choice.Delta.SetContentString("")
+	choice.FinishReason = &constant.FinishReasonStop
+	response := dto.ChatCompletionsStreamResponse{
+		Id:      zhipuResponse.RequestId,
+		Object:  "chat.completion.chunk",
+		Created: common.GetTimestamp(),
+		Model:   "chatglm",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{choice},
+	}
+	return &response, &zhipuResponse.Usage
+}
+
+func zhipuStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	var usage *dto.Usage
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Split(bufio.ScanLines)
+	dataChan := make(chan string)
+	metaChan := make(chan string)
+	stopChan := make(chan bool)
+	go func() {
+		for scanner.Scan() {
+			data := scanner.Text()
+			lines := strings.Split(data, "\n")
+			for i, line := range lines {
+				if len(line) < 5 {
+					continue
+				}
+				if line[:5] == "data:" {
+					dataChan <- line[5:]
+					if i != len(lines)-1 {
+						dataChan <- "\n"
+					}
+				} else if line[:5] == "meta:" {
+					metaChan <- line[5:]
+				}
+			}
+		}
+		stopChan <- true
+	}()
+	helper.SetEventStreamHeaders(c)
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case data := <-dataChan:
+			response := streamResponseZhipu2OpenAI(data)
+			jsonResponse, err := json.Marshal(response)
+			if err != nil {
+				common.SysLog("error marshalling stream response: " + err.Error())
+				return true
+			}
+			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
+			return true
+		case data := <-metaChan:
+			var zhipuResponse ZhipuStreamMetaResponse
+			err := json.Unmarshal([]byte(data), &zhipuResponse)
+			if err != nil {
+				common.SysLog("error unmarshalling stream response: " + err.Error())
+				return true
+			}
+			response, zhipuUsage := streamMetaResponseZhipu2OpenAI(&zhipuResponse)
+			jsonResponse, err := json.Marshal(response)
+			if err != nil {
+				common.SysLog("error marshalling stream response: " + err.Error())
+				return true
+			}
+			usage = zhipuUsage
+			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
+			return true
+		case <-stopChan:
+			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
+			return false
+		}
+	})
+	service.CloseResponseBodyGracefully(resp)
+	return usage, nil
+}
+
+func zhipuHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	var zhipuResponse ZhipuResponse
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+	service.CloseResponseBodyGracefully(resp)
+	err = json.Unmarshal(responseBody, &zhipuResponse)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if !zhipuResponse.Success {
+		return nil, types.WithOpenAIError(types.OpenAIError{
+			Message: zhipuResponse.Msg,
+			Code:    zhipuResponse.Code,
+		}, resp.StatusCode)
+	}
+	fullTextResponse := responseZhipu2OpenAI(&zhipuResponse)
+	jsonResponse, err := json.Marshal(fullTextResponse)
+	if err != nil {
+		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(resp.StatusCode)
+	_, err = c.Writer.Write(jsonResponse)
+	return &fullTextResponse.Usage, nil
 }

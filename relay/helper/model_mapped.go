@@ -1,29 +1,30 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package helper
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
-	"veloera/relay/common"
 )
 
-func ModelMappedHelper(c *gin.Context, info *common.RelayInfo) error {
+func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Request) error {
+	if info.ChannelMeta == nil {
+		info.ChannelMeta = &common.ChannelMeta{}
+	}
+
+	isResponsesCompact := info.RelayMode == relayconstant.RelayModeResponsesCompact
+	originModelName := info.OriginModelName
+	mappingModelName := originModelName
+	if isResponsesCompact && strings.HasSuffix(originModelName, ratio_setting.CompactModelSuffix) {
+		mappingModelName = strings.TrimSuffix(originModelName, ratio_setting.CompactModelSuffix)
+	}
+
 	// map model name
 	modelMapping := c.GetString("model_mapping")
 	if modelMapping != "" && modelMapping != "{}" {
@@ -32,10 +33,49 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo) error {
 		if err != nil {
 			return fmt.Errorf("unmarshal_model_mapping_failed")
 		}
-		if modelMap[info.OriginModelName] != "" {
-			info.UpstreamModelName = modelMap[info.OriginModelName]
-			info.IsModelMapped = true
+
+		// 支持链式模型重定向，最终使用链尾的模型
+		currentModel := mappingModelName
+		visitedModels := map[string]bool{
+			currentModel: true,
 		}
+		for {
+			if mappedModel, exists := modelMap[currentModel]; exists && mappedModel != "" {
+				// 模型重定向循环检测，避免无限循环
+				if visitedModels[mappedModel] {
+					if mappedModel == currentModel {
+						if currentModel == info.OriginModelName {
+							info.IsModelMapped = false
+							return nil
+						} else {
+							info.IsModelMapped = true
+							break
+						}
+					}
+					return errors.New("model_mapping_contains_cycle")
+				}
+				visitedModels[mappedModel] = true
+				currentModel = mappedModel
+				info.IsModelMapped = true
+			} else {
+				break
+			}
+		}
+		if info.IsModelMapped {
+			info.UpstreamModelName = currentModel
+		}
+	}
+
+	if isResponsesCompact {
+		finalUpstreamModelName := mappingModelName
+		if info.IsModelMapped && info.UpstreamModelName != "" {
+			finalUpstreamModelName = info.UpstreamModelName
+		}
+		info.UpstreamModelName = finalUpstreamModelName
+		info.OriginModelName = ratio_setting.WithCompactModelSuffix(finalUpstreamModelName)
+	}
+	if request != nil {
+		request.SetModelName(info.UpstreamModelName)
 	}
 	return nil
 }

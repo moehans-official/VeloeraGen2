@@ -1,28 +1,13 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package middleware
 
 import (
 	"context"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"time"
-	"veloera/common"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/gin-gonic/gin"
 )
 
 var timeFormat = "2006-01-02T15:04:05.000Z"
@@ -117,7 +102,10 @@ func GlobalAPIRateLimit() func(c *gin.Context) {
 }
 
 func CriticalRateLimit() func(c *gin.Context) {
-	return rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
+	if common.CriticalRateLimitEnable {
+		return rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
+	}
+	return defNext
 }
 
 func DownloadRateLimit() func(c *gin.Context) {
@@ -126,4 +114,92 @@ func DownloadRateLimit() func(c *gin.Context) {
 
 func UploadRateLimit() func(c *gin.Context) {
 	return rateLimitFactory(common.UploadRateLimitNum, common.UploadRateLimitDuration, "UP")
+}
+
+// userRateLimitFactory creates a rate limiter keyed by authenticated user ID
+// instead of client IP, making it resistant to proxy rotation attacks.
+// Must be used AFTER authentication middleware (UserAuth).
+func userRateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
+	if common.RedisEnabled {
+		return func(c *gin.Context) {
+			userId := c.GetInt("id")
+			if userId == 0 {
+				c.Status(http.StatusUnauthorized)
+				c.Abort()
+				return
+			}
+			key := fmt.Sprintf("rateLimit:%s:user:%d", mark, userId)
+			userRedisRateLimiter(c, maxRequestNum, duration, key)
+		}
+	}
+	// It's safe to call multi times.
+	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	return func(c *gin.Context) {
+		userId := c.GetInt("id")
+		if userId == 0 {
+			c.Status(http.StatusUnauthorized)
+			c.Abort()
+			return
+		}
+		key := fmt.Sprintf("%s:user:%d", mark, userId)
+		if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
+			c.Status(http.StatusTooManyRequests)
+			c.Abort()
+			return
+		}
+	}
+}
+
+// userRedisRateLimiter is like redisRateLimiter but accepts a pre-built key
+// (to support user-ID-based keys).
+func userRedisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, key string) {
+	ctx := context.Background()
+	rdb := common.RDB
+	listLength, err := rdb.LLen(ctx, key).Result()
+	if err != nil {
+		fmt.Println(err.Error())
+		c.Status(http.StatusInternalServerError)
+		c.Abort()
+		return
+	}
+	if listLength < int64(maxRequestNum) {
+		rdb.LPush(ctx, key, time.Now().Format(timeFormat))
+		rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
+	} else {
+		oldTimeStr, _ := rdb.LIndex(ctx, key, -1).Result()
+		oldTime, err := time.Parse(timeFormat, oldTimeStr)
+		if err != nil {
+			fmt.Println(err)
+			c.Status(http.StatusInternalServerError)
+			c.Abort()
+			return
+		}
+		nowTimeStr := time.Now().Format(timeFormat)
+		nowTime, err := time.Parse(timeFormat, nowTimeStr)
+		if err != nil {
+			fmt.Println(err)
+			c.Status(http.StatusInternalServerError)
+			c.Abort()
+			return
+		}
+		if int64(nowTime.Sub(oldTime).Seconds()) < duration {
+			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
+			c.Status(http.StatusTooManyRequests)
+			c.Abort()
+			return
+		} else {
+			rdb.LPush(ctx, key, time.Now().Format(timeFormat))
+			rdb.LTrim(ctx, key, 0, int64(maxRequestNum-1))
+			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
+		}
+	}
+}
+
+// SearchRateLimit returns a per-user rate limiter for search endpoints.
+// Configurable via SEARCH_RATE_LIMIT_ENABLE / SEARCH_RATE_LIMIT / SEARCH_RATE_LIMIT_DURATION.
+func SearchRateLimit() func(c *gin.Context) {
+	if !common.SearchRateLimitEnable {
+		return defNext
+	}
+	return userRateLimitFactory(common.SearchRateLimitNum, common.SearchRateLimitDuration, "SR")
 }

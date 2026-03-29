@@ -1,94 +1,23 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
-	"veloera/common"
-	"veloera/constant"
-	"veloera/model"
-	"veloera/setting"
-	"veloera/setting/operation_setting"
-	"veloera/setting/system_setting"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/oauth"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/console_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
 )
-
-func Healthz(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "ok",
-		"data": gin.H{
-			"version":    common.Version,
-			"start_time": common.StartTime,
-		},
-	})
-}
-
-func Readyz(c *gin.Context) {
-	type componentState struct {
-		Status string `json:"status"`
-		Error  string `json:"error,omitempty"`
-	}
-
-	checks := map[string]componentState{}
-	ready := true
-
-	if err := model.PingDB(); err != nil {
-		ready = false
-		checks["database"] = componentState{Status: "down", Error: err.Error()}
-	} else {
-		checks["database"] = componentState{Status: "up"}
-	}
-
-	if common.RedisEnabled {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if _, err := common.RDB.Ping(ctx).Result(); err != nil {
-			ready = false
-			checks["redis"] = componentState{Status: "down", Error: err.Error()}
-		} else {
-			checks["redis"] = componentState{Status: "up"}
-		}
-	} else {
-		checks["redis"] = componentState{Status: "disabled"}
-	}
-
-	statusCode := http.StatusOK
-	message := "ready"
-	if !ready {
-		statusCode = http.StatusServiceUnavailable
-		message = "not ready"
-	}
-
-	c.JSON(statusCode, gin.H{
-		"success": ready,
-		"message": message,
-		"data": gin.H{
-			"version": common.Version,
-			"checks":  checks,
-		},
-	})
-}
 
 func TestStatus(c *gin.Context) {
 	err := model.PingDB()
@@ -99,72 +28,140 @@ func TestStatus(c *gin.Context) {
 		})
 		return
 	}
+	// 获取HTTP统计信息
+	httpStats := middleware.GetStats()
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Server is running",
+		"success":    true,
+		"message":    "Server is running",
+		"http_stats": httpStats,
 	})
 	return
 }
 
 func GetStatus(c *gin.Context) {
+
+	cs := console_setting.GetConsoleSetting()
 	common.OptionMapRWMutex.RLock()
-	affEnabled := common.OptionMap["AffEnabled"] == "true"
-	logChatContentEnabled := common.OptionMap["LogChatContentEnabled"] == "true"
-	common.OptionMapRWMutex.RUnlock()
+	defer common.OptionMapRWMutex.RUnlock()
+
+	passkeySetting := system_setting.GetPasskeySettings()
+	legalSetting := system_setting.GetLegalSettings()
+
+	data := gin.H{
+		"version":                     common.Version,
+		"start_time":                  common.StartTime,
+		"email_verification":          common.EmailVerificationEnabled,
+		"github_oauth":                common.GitHubOAuthEnabled,
+		"github_client_id":            common.GitHubClientId,
+		"discord_oauth":               system_setting.GetDiscordSettings().Enabled,
+		"discord_client_id":           system_setting.GetDiscordSettings().ClientId,
+		"linuxdo_oauth":               common.LinuxDOOAuthEnabled,
+		"linuxdo_client_id":           common.LinuxDOClientId,
+		"linuxdo_minimum_trust_level": common.LinuxDOMinimumTrustLevel,
+		"telegram_oauth":              common.TelegramOAuthEnabled,
+		"telegram_bot_name":           common.TelegramBotName,
+		"system_name":                 common.SystemName,
+		"logo":                        common.Logo,
+		"footer_html":                 common.Footer,
+		"wechat_qrcode":               common.WeChatAccountQRCodeImageURL,
+		"wechat_login":                common.WeChatAuthEnabled,
+		"server_address":              system_setting.ServerAddress,
+		"turnstile_check":             common.TurnstileCheckEnabled,
+		"turnstile_site_key":          common.TurnstileSiteKey,
+		"top_up_link":                 common.TopUpLink,
+		"docs_link":                   operation_setting.GetGeneralSetting().DocsLink,
+		"quota_per_unit":              common.QuotaPerUnit,
+		// 兼容旧前端：保留 display_in_currency，同时提供新的 quota_display_type
+		"display_in_currency":           operation_setting.IsCurrencyDisplay(),
+		"quota_display_type":            operation_setting.GetQuotaDisplayType(),
+		"custom_currency_symbol":        operation_setting.GetGeneralSetting().CustomCurrencySymbol,
+		"custom_currency_exchange_rate": operation_setting.GetGeneralSetting().CustomCurrencyExchangeRate,
+		"enable_batch_update":           common.BatchUpdateEnabled,
+		"enable_drawing":                common.DrawingEnabled,
+		"enable_task":                   common.TaskEnabled,
+		"enable_data_export":            common.DataExportEnabled,
+		"data_export_default_time":      common.DataExportDefaultTime,
+		"default_collapse_sidebar":      common.DefaultCollapseSidebar,
+		"mj_notify_enabled":             setting.MjNotifyEnabled,
+		"chats":                         setting.Chats,
+		"demo_site_enabled":             operation_setting.DemoSiteEnabled,
+		"self_use_mode_enabled":         operation_setting.SelfUseModeEnabled,
+		"default_use_auto_group":        setting.DefaultUseAutoGroup,
+
+		"usd_exchange_rate": operation_setting.USDExchangeRate,
+		"price":             operation_setting.Price,
+		"stripe_unit_price": setting.StripeUnitPrice,
+
+		// 面板启用开关
+		"api_info_enabled":      cs.ApiInfoEnabled,
+		"uptime_kuma_enabled":   cs.UptimeKumaEnabled,
+		"announcements_enabled": cs.AnnouncementsEnabled,
+		"faq_enabled":           cs.FAQEnabled,
+
+		// 模块管理配置
+		"HeaderNavModules":    common.OptionMap["HeaderNavModules"],
+		"SidebarModulesAdmin": common.OptionMap["SidebarModulesAdmin"],
+
+		"oidc_enabled":                system_setting.GetOIDCSettings().Enabled,
+		"oidc_client_id":              system_setting.GetOIDCSettings().ClientId,
+		"oidc_authorization_endpoint": system_setting.GetOIDCSettings().AuthorizationEndpoint,
+		"passkey_login":               passkeySetting.Enabled,
+		"passkey_display_name":        passkeySetting.RPDisplayName,
+		"passkey_rp_id":               passkeySetting.RPID,
+		"passkey_origins":             passkeySetting.Origins,
+		"passkey_allow_insecure":      passkeySetting.AllowInsecureOrigin,
+		"passkey_user_verification":   passkeySetting.UserVerification,
+		"passkey_attachment":          passkeySetting.AttachmentPreference,
+		"setup":                       constant.Setup,
+		"user_agreement_enabled":      legalSetting.UserAgreement != "",
+		"privacy_policy_enabled":      legalSetting.PrivacyPolicy != "",
+		"checkin_enabled":             operation_setting.GetCheckinSetting().Enabled,
+		"_qn":                         "new-api",
+	}
+
+	// 根据启用状态注入可选内容
+	if cs.ApiInfoEnabled {
+		data["api_info"] = console_setting.GetApiInfo()
+	}
+	if cs.AnnouncementsEnabled {
+		data["announcements"] = console_setting.GetAnnouncements()
+	}
+	if cs.FAQEnabled {
+		data["faq"] = console_setting.GetFAQ()
+	}
+
+	// Add enabled custom OAuth providers
+	customProviders := oauth.GetEnabledCustomProviders()
+	if len(customProviders) > 0 {
+		type CustomOAuthInfo struct {
+			Id                    int    `json:"id"`
+			Name                  string `json:"name"`
+			Slug                  string `json:"slug"`
+			Icon                  string `json:"icon"`
+			ClientId              string `json:"client_id"`
+			AuthorizationEndpoint string `json:"authorization_endpoint"`
+			Scopes                string `json:"scopes"`
+		}
+		providersInfo := make([]CustomOAuthInfo, 0, len(customProviders))
+		for _, p := range customProviders {
+			config := p.GetConfig()
+			providersInfo = append(providersInfo, CustomOAuthInfo{
+				Id:                    config.Id,
+				Name:                  config.Name,
+				Slug:                  config.Slug,
+				Icon:                  config.Icon,
+				ClientId:              config.ClientId,
+				AuthorizationEndpoint: config.AuthorizationEndpoint,
+				Scopes:                config.Scopes,
+			})
+		}
+		data["custom_oauth_providers"] = providersInfo
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data": gin.H{
-			"version":                      common.Version,
-			"start_time":                   common.StartTime,
-			"email_verification":           common.EmailVerificationEnabled,
-			"github_oauth":                 common.GitHubOAuthEnabled,
-			"github_client_id":             common.GitHubClientId,
-			"linuxdo_oauth":                common.LinuxDOOAuthEnabled,
-			"linuxdo_client_id":            common.LinuxDOClientId,
-			"linuxdo_minimum_trust_level":  common.LinuxDOMinimumTrustLevel,
-			"idcflare_oauth":               common.IDCFlareOAuthEnabled,
-			"idcflare_client_id":           common.IDCFlareClientId,
-			"idcflare_minimum_trust_level": common.IDCFlareMinimumTrustLevel,
-			"telegram_oauth":               common.TelegramOAuthEnabled,
-			"telegram_bot_name":            common.TelegramBotName,
-			"system_name":                  common.SystemName,
-			"system_name_color":            common.SystemNameColor,
-			"hide_header_logo_enabled":     common.HideHeaderLogoEnabled,
-			"hide_header_text_enabled":     common.HideHeaderTextEnabled,
-			"logo":                         common.Logo,
-			"footer_html":                  common.Footer,
-			"wechat_qrcode":                common.WeChatAccountQRCodeImageURL,
-			"wechat_login":                 common.WeChatAuthEnabled,
-			"server_address":               setting.ServerAddress,
-			"price":                        setting.Price,
-			"min_topup":                    setting.MinTopUp,
-			"turnstile_check":              common.TurnstileCheckEnabled,
-			"turnstile_site_key":           common.TurnstileSiteKey,
-			"top_up_link":                  common.TopUpLink,
-			"docs_link":                    operation_setting.GetGeneralSetting().DocsLink,
-			"quota_per_unit":               common.QuotaPerUnit,
-			"display_in_currency":          common.DisplayInCurrencyEnabled,
-			"enable_batch_update":          common.BatchUpdateEnabled,
-			"enable_drawing":               common.DrawingEnabled,
-			"enable_task":                  common.TaskEnabled,
-			"enable_data_export":           common.DataExportEnabled,
-			"data_export_default_time":     common.DataExportDefaultTime,
-			"default_collapse_sidebar":     common.DefaultCollapseSidebar,
-			"enable_online_topup":          setting.PayAddress != "" && setting.EpayId != "" && setting.EpayKey != "",
-			"mj_notify_enabled":            setting.MjNotifyEnabled,
-			"chats":                        setting.Chats,
-			"demo_site_enabled":            operation_setting.DemoSiteEnabled,
-			"self_use_mode_enabled":        operation_setting.SelfUseModeEnabled,
-			"oidc_enabled":                 system_setting.GetOIDCSettings().Enabled,
-			"oidc_client_id":               system_setting.GetOIDCSettings().ClientId,
-			"oidc_authorization_endpoint":  system_setting.GetOIDCSettings().AuthorizationEndpoint,
-			"setup":                        constant.Setup,
-			"check_in_enabled":             common.CheckInEnabled,
-			"aff_enabled":                  affEnabled,
-			"log_chat_content_enabled":     logChatContentEnabled,
-		},
+		"data":    data,
 	})
 	return
 }
@@ -191,6 +188,24 @@ func GetAbout(c *gin.Context) {
 	return
 }
 
+func GetUserAgreement(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    system_setting.GetLegalSettings().UserAgreement,
+	})
+	return
+}
+
+func GetPrivacyPolicy(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    system_setting.GetLegalSettings().PrivacyPolicy,
+	})
+	return
+}
+
 func GetMidjourney(c *gin.Context) {
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
@@ -204,38 +219,11 @@ func GetMidjourney(c *gin.Context) {
 
 func GetHomePageContent(c *gin.Context) {
 	common.OptionMapRWMutex.RLock()
-	content := common.OptionMap["HomePageContent"]
-	common.OptionMapRWMutex.RUnlock()
-
-	// For HTML content starting with <!DOCTYPE, we need to prevent JSON encoding from escaping HTML
-	// Check if it's a complete HTML document
-	if strings.HasPrefix(strings.TrimSpace(content), "<!DOCTYPE") || strings.HasPrefix(strings.TrimSpace(content), "<html") {
-		// Use custom JSON encoder that doesn't escape HTML
-		response := map[string]interface{}{
-			"success": true,
-			"message": "",
-			"data":    content,
-		}
-
-		encoder := json.NewEncoder(c.Writer)
-		encoder.SetEscapeHTML(false) // Don't escape HTML characters
-		c.Header("Content-Type", "application/json")
-		c.Status(http.StatusOK)
-		if err := encoder.Encode(response); err != nil {
-			// Fallback to regular JSON if encoding fails
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "Failed to encode response",
-			})
-		}
-		return
-	}
-
-	// For non-HTML content, use regular JSON encoding
+	defer common.OptionMapRWMutex.RUnlock()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    content,
+		"data":    common.OptionMap["HomePageContent"],
 	})
 	return
 }
@@ -301,10 +289,7 @@ func SendEmailVerification(c *gin.Context) {
 		"<p>验证码 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, code, common.VerificationValidMinutes)
 	err := common.SendEmail(subject, email, content)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -332,7 +317,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 	}
 	code := common.GenerateVerificationCode(0)
 	common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
-	link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", setting.ServerAddress, email, code)
+	link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", system_setting.ServerAddress, email, code)
 	subject := fmt.Sprintf("%s密码重置", common.SystemName)
 	content := fmt.Sprintf("<p>您好，你正在进行%s密码重置。</p>"+
 		"<p>点击 <a href='%s'>此处</a> 进行密码重置。</p>"+
@@ -340,10 +325,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 		"<p>重置链接 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, link, link, common.VerificationValidMinutes)
 	err := common.SendEmail(subject, email, content)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -378,10 +360,7 @@ func ResetPassword(c *gin.Context) {
 	password := common.GenerateVerificationCode(12)
 	err = model.ResetUserPasswordByEmail(req.Email, password)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	common.DeleteKey(req.Email, common.PasswordResetPurpose)
@@ -391,40 +370,4 @@ func ResetPassword(c *gin.Context) {
 		"data":    password,
 	})
 	return
-}
-
-// GetCustomCSS serves the global CSS content
-func GetCustomCSS(c *gin.Context) {
-	common.OptionMapRWMutex.RLock()
-	cssContent := common.OptionMap["global_css"]
-	common.OptionMapRWMutex.RUnlock()
-
-	if cssContent == "" {
-		c.Status(http.StatusNoContent)
-		return
-	}
-
-	// Basic security validation to prevent script tag injection in CSS
-	if strings.Contains(strings.ToLower(cssContent), "<script") {
-		c.Status(http.StatusBadRequest)
-		return
-	}
-
-	c.Header("Content-Type", "text/css")
-	c.String(http.StatusOK, cssContent)
-}
-
-// GetCustomJS serves the global JavaScript content
-func GetCustomJS(c *gin.Context) {
-	common.OptionMapRWMutex.RLock()
-	jsContent := common.OptionMap["global_js"]
-	common.OptionMapRWMutex.RUnlock()
-
-	if jsContent == "" {
-		c.Status(http.StatusNoContent)
-		return
-	}
-
-	c.Header("Content-Type", "application/javascript")
-	c.String(http.StatusOK, jsContent)
 }

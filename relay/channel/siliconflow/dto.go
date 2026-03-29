@@ -1,22 +1,6 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package siliconflow
 
-import "veloera/dto"
+import "github.com/QuantumNous/new-api/dto"
 
 type SFTokens struct {
 	InputTokens  int `json:"input_tokens"`
@@ -30,4 +14,19 @@ type SFMeta struct {
 type SFRerankResponse struct {
 	Results []dto.RerankResponseResult `json:"results"`
 	Meta    SFMeta                     `json:"meta"`
+}
+
+type SFImageRequest struct {
+	Model             string  `json:"model"`
+	Prompt            string  `json:"prompt"`
+	NegativePrompt    string  `json:"negative_prompt,omitempty"`
+	ImageSize         string  `json:"image_size,omitempty"`
+	BatchSize         uint    `json:"batch_size,omitempty"`
+	Seed              uint64  `json:"seed,omitempty"`
+	NumInferenceSteps uint    `json:"num_inference_steps,omitempty"`
+	GuidanceScale     float64 `json:"guidance_scale,omitempty"`
+	Cfg               float64 `json:"cfg,omitempty"`
+	Image             string  `json:"image,omitempty"`
+	Image2            string  `json:"image2,omitempty"`
+	Image3            string  `json:"image3,omitempty"`
 }

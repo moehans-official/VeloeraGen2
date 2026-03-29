@@ -1,28 +1,11 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package service
 
 import (
 	"errors"
-	"fmt"
-	"regexp"
 	"strings"
-	"veloera/dto"
-	"veloera/setting"
+
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/setting"
 )
 
 func CheckSensitiveMessages(messages []dto.Message) ([]string, error) {
@@ -49,25 +32,8 @@ func CheckSensitiveMessages(messages []dto.Message) ([]string, error) {
 	return nil, nil
 }
 
-func CheckSensitiveText(text string) ([]string, error) {
-	if ok, words := SensitiveWordContains(text); ok {
-		return words, errors.New("sensitive words detected")
-	}
-	return nil, nil
-}
-
-func CheckSensitiveInput(input any) ([]string, error) {
-	switch v := input.(type) {
-	case string:
-		return CheckSensitiveText(v)
-	case []string:
-		var builder strings.Builder
-		for _, s := range v {
-			builder.WriteString(s)
-		}
-		return CheckSensitiveText(builder.String())
-	}
-	return CheckSensitiveText(fmt.Sprintf("%v", input))
+func CheckSensitiveText(text string) (bool, []string) {
+	return SensitiveWordContains(text)
 }
 
 // SensitiveWordContains 是否包含敏感词，返回是否包含敏感词和敏感词列表
@@ -79,15 +45,6 @@ func SensitiveWordContains(text string) (bool, []string) {
 		return false, nil
 	}
 	checkText := strings.ToLower(text)
-
-	// First check regular expressions
-	for _, pattern := range setting.RegexSensitiveWords {
-		if matched, err := regexp.MatchString(pattern, checkText); err == nil && matched {
-			return true, []string{pattern}
-		}
-	}
-
-	// Then check normal words using AC algorithm
 	return AcSearch(checkText, setting.SensitiveWords, true)
 }
 
@@ -97,7 +54,7 @@ func SensitiveWordReplace(text string, returnImmediately bool) (bool, []string, 
 		return false, nil, text
 	}
 	checkText := strings.ToLower(text)
-	m := InitAc(setting.SensitiveWords)
+	m := getOrBuildAC(setting.SensitiveWords)
 	hits := m.MultiPatternSearch([]rune(checkText), returnImmediately)
 	if len(hits) > 0 {
 		words := make([]string, 0, len(hits))

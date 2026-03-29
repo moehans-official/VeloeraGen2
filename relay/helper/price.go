@@ -1,121 +1,197 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package helper
 
 import (
 	"fmt"
-	"veloera/common"
-	constant2 "veloera/constant"
-	relaycommon "veloera/relay/common"
-	"veloera/setting"
-	"veloera/setting/operation_setting"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
 
-type PriceData struct {
-	ModelPrice             float64
-	ModelRatio             float64
-	CompletionRatio        float64
-	CacheRatio             float64
-	GroupRatio             float64
-	UsePrice               bool
-	CacheCreationRatio     float64
-	ShouldPreConsumedQuota int
-}
+// https://docs.claude.com/en/docs/build-with-claude/prompt-caching#1-hour-cache-duration
+const claudeCacheCreation1hMultiplier = 6 / 3.75
 
-func (p PriceData) ToSetting() string {
-	return fmt.Sprintf("ModelPrice: %f, ModelRatio: %f, CompletionRatio: %f, CacheRatio: %f, GroupRatio: %f, UsePrice: %t, CacheCreationRatio: %f, ShouldPreConsumedQuota: %d", p.ModelPrice, p.ModelRatio, p.CompletionRatio, p.CacheRatio, p.GroupRatio, p.UsePrice, p.CacheCreationRatio, p.ShouldPreConsumedQuota)
-}
-
-func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, completionTokens int) (PriceData, error) {
-	// Extract the base model name if it has a prefix
-	modelName := info.OriginModelName
-	modelNameForPrice := modelName
-	modelNameForRatio := modelName
-
-	// Check redirect billing setting
-	redirectBillingEnabled := operation_setting.IsRedirectBillingEnabled()
-
-	// Check if the model has a prefix by looking at the difference between OriginModelName and UpstreamModelName
-	if info.OriginModelName != info.UpstreamModelName && !redirectBillingEnabled {
-		modelNameForPrice = info.UpstreamModelName
-		modelNameForRatio = info.UpstreamModelName
+// HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
+func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.GroupRatioInfo {
+	groupRatioInfo := types.GroupRatioInfo{
+		GroupRatio:        1.0, // default ratio
+		GroupSpecialRatio: -1,
 	}
 
-	modelPrice, usePrice := operation_setting.GetModelPriceWithFallback(modelNameForPrice, false)
-	groupRatio := setting.GetGroupRatio(info.Group)
+	// check auto group
+	autoGroup, exists := ctx.Get("auto_group")
+	if exists {
+		logger.LogDebug(ctx, fmt.Sprintf("final group: %s", autoGroup))
+		relayInfo.UsingGroup = autoGroup.(string)
+	}
+
+	// check user group special ratio
+	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
+	if ok {
+		// user group special ratio
+		groupRatioInfo.GroupSpecialRatio = userGroupRatio
+		groupRatioInfo.GroupRatio = userGroupRatio
+		groupRatioInfo.HasSpecialRatio = true
+	} else {
+		// normal group ratio
+		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
+	}
+
+	return groupRatioInfo
+}
+
+func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (types.PriceData, error) {
+	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
+
+	groupRatioInfo := HandleGroupRatio(c, info)
+
 	var preConsumedQuota int
 	var modelRatio float64
 	var completionRatio float64
 	var cacheRatio float64
+	var imageRatio float64
 	var cacheCreationRatio float64
+	var cacheCreationRatio5m float64
+	var cacheCreationRatio1h float64
+	var audioRatio float64
+	var audioCompletionRatio float64
+	var freeModel bool
 	if !usePrice {
-		preConsumedTokens := common.PreConsumedQuota
-		if completionTokens != 0 {
-			preConsumedTokens = promptTokens + completionTokens
+		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
+		if meta.MaxTokens != 0 {
+			preConsumedTokens += meta.MaxTokens
 		}
 		var success bool
-		modelRatio, success = operation_setting.GetModelRatioWithFallback(modelNameForRatio)
+		var matchName string
+		modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
 		if !success {
 			acceptUnsetRatio := false
-			if accept, ok := info.UserSetting[constant2.UserAcceptUnsetRatioModel]; ok {
-				b, ok := accept.(bool)
-				if ok {
-					acceptUnsetRatio = b
-				}
+			if info.UserSetting.AcceptUnsetRatioModel {
+				acceptUnsetRatio = true
 			}
 			if !acceptUnsetRatio {
-				return PriceData{}, fmt.Errorf("模型 %s 倍率或价格未配置，请联系管理员设置或开始自用模式；Model %s ratio or price not set, please set or start self-use mode", info.OriginModelName, info.OriginModelName)
+				return types.PriceData{}, fmt.Errorf("模型 %s 倍率或价格未配置，请联系管理员设置或开始自用模式；Model %s ratio or price not set, please set or start self-use mode", matchName, matchName)
 			}
 		}
-		completionRatio = operation_setting.GetCompletionRatioWithFallback(modelNameForRatio)
-		cacheRatio, _ = operation_setting.GetCacheRatio(modelNameForRatio)
-		cacheCreationRatio, _ = operation_setting.GetCreateCacheRatio(modelNameForRatio)
-		ratio := modelRatio * groupRatio
+		completionRatio = ratio_setting.GetCompletionRatio(info.OriginModelName)
+		cacheRatio, _ = ratio_setting.GetCacheRatio(info.OriginModelName)
+		cacheCreationRatio, _ = ratio_setting.GetCreateCacheRatio(info.OriginModelName)
+		cacheCreationRatio5m = cacheCreationRatio
+		// 固定1h和5min缓存写入价格的比例
+		cacheCreationRatio1h = cacheCreationRatio * claudeCacheCreation1hMultiplier
+		imageRatio, _ = ratio_setting.GetImageRatio(info.OriginModelName)
+		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
+		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
+		ratio := modelRatio * groupRatioInfo.GroupRatio
 		preConsumedQuota = int(float64(preConsumedTokens) * ratio)
 	} else {
-		preConsumedQuota = int(modelPrice * common.QuotaPerUnit * groupRatio)
+		if meta.ImagePriceRatio != 0 {
+			modelPrice = modelPrice * meta.ImagePriceRatio
+		}
+		preConsumedQuota = int(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 	}
 
-	priceData := PriceData{
-		ModelPrice:             modelPrice,
-		ModelRatio:             modelRatio,
-		CompletionRatio:        completionRatio,
-		GroupRatio:             groupRatio,
-		UsePrice:               usePrice,
-		CacheRatio:             cacheRatio,
-		CacheCreationRatio:     cacheCreationRatio,
-		ShouldPreConsumedQuota: preConsumedQuota,
+	// check if free model pre-consume is disabled
+	if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
+		// if model price or ratio is 0, do not pre-consume quota
+		if groupRatioInfo.GroupRatio == 0 {
+			preConsumedQuota = 0
+			freeModel = true
+		} else if usePrice {
+			if modelPrice == 0 {
+				preConsumedQuota = 0
+				freeModel = true
+			}
+		} else {
+			if modelRatio == 0 {
+				preConsumedQuota = 0
+				freeModel = true
+			}
+		}
+	}
+
+	priceData := types.PriceData{
+		FreeModel:            freeModel,
+		ModelPrice:           modelPrice,
+		ModelRatio:           modelRatio,
+		CompletionRatio:      completionRatio,
+		GroupRatioInfo:       groupRatioInfo,
+		UsePrice:             usePrice,
+		CacheRatio:           cacheRatio,
+		ImageRatio:           imageRatio,
+		AudioRatio:           audioRatio,
+		AudioCompletionRatio: audioCompletionRatio,
+		CacheCreationRatio:   cacheCreationRatio,
+		CacheCreation5mRatio: cacheCreationRatio5m,
+		CacheCreation1hRatio: cacheCreationRatio1h,
+		QuotaToPreConsume:    preConsumedQuota,
 	}
 
 	if common.DebugEnabled {
 		println(fmt.Sprintf("model_price_helper result: %s", priceData.ToSetting()))
 	}
+	info.PriceData = priceData
+	return priceData, nil
+}
 
+// ModelPriceHelperPerCall 按次计费的 PriceHelper (MJ、Task)
+func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (types.PriceData, error) {
+	groupRatioInfo := HandleGroupRatio(c, info)
+
+	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
+	// 如果没有配置价格，检查模型倍率配置
+	if !success {
+
+		// 没有配置费用，也要使用默认费用,否则按费率计费模型无法使用
+		defaultPrice, ok := ratio_setting.GetDefaultModelPriceMap()[info.OriginModelName]
+		if ok {
+			modelPrice = defaultPrice
+		} else {
+			// 没有配置倍率也不接受没配置,那就返回错误
+			_, ratioSuccess, matchName := ratio_setting.GetModelRatio(info.OriginModelName)
+			acceptUnsetRatio := false
+			if info.UserSetting.AcceptUnsetRatioModel {
+				acceptUnsetRatio = true
+			}
+			if !ratioSuccess && !acceptUnsetRatio {
+				return types.PriceData{}, fmt.Errorf("模型 %s 倍率或价格未配置，请联系管理员设置或开始自用模式；Model %s ratio or price not set, please set or start self-use mode", matchName, matchName)
+			}
+			// 未配置价格但配置了倍率，使用默认预扣价格
+			modelPrice = float64(common.PreConsumedQuota) / common.QuotaPerUnit
+		}
+
+	}
+	quota := int(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+
+	// 免费模型检测（与 ModelPriceHelper 对齐）
+	freeModel := false
+	if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
+		if groupRatioInfo.GroupRatio == 0 || modelPrice == 0 {
+			quota = 0
+			freeModel = true
+		}
+	}
+
+	priceData := types.PriceData{
+		FreeModel:      freeModel,
+		ModelPrice:     modelPrice,
+		Quota:          quota,
+		GroupRatioInfo: groupRatioInfo,
+	}
 	return priceData, nil
 }
 
 func ContainPriceOrRatio(modelName string) bool {
-	_, ok := operation_setting.GetModelPriceWithFallback(modelName, false)
+	_, ok := ratio_setting.GetModelPrice(modelName, false)
 	if ok {
 		return true
 	}
-	_, ok = operation_setting.GetModelRatioWithFallback(modelName)
+	_, ok, _ = ratio_setting.GetModelRatio(modelName)
 	if ok {
 		return true
 	}

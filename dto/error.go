@@ -1,40 +1,33 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package dto
 
-type OpenAIError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Param   string `json:"param"`
-	Code    any    `json:"code"`
-}
+import (
+	"encoding/json"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/types"
+)
+
+//type OpenAIError struct {
+//	Message string `json:"message"`
+//	Type    string `json:"type"`
+//	Param   string `json:"param"`
+//	Code    any    `json:"code"`
+//}
 
 type OpenAIErrorWithStatusCode struct {
-	Error      OpenAIError `json:"error"`
-	StatusCode int         `json:"status_code"`
+	Error      types.OpenAIError `json:"error"`
+	StatusCode int               `json:"status_code"`
 	LocalError bool
 }
 
 type GeneralErrorResponse struct {
-	Error    OpenAIError `json:"error"`
-	Message  string      `json:"message"`
-	Msg      string      `json:"msg"`
-	Err      string      `json:"err"`
-	ErrorMsg string      `json:"error_msg"`
+	Error    json.RawMessage `json:"error"`
+	Message  string          `json:"message"`
+	Msg      string          `json:"msg"`
+	Err      string          `json:"err"`
+	ErrorMsg string          `json:"error_msg"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Detail   string          `json:"detail,omitempty"`
 	Header   struct {
 		Message string `json:"message"`
 	} `json:"header"`
@@ -45,9 +38,35 @@ type GeneralErrorResponse struct {
 	} `json:"response"`
 }
 
+func (e GeneralErrorResponse) TryToOpenAIError() *types.OpenAIError {
+	var openAIError types.OpenAIError
+	if len(e.Error) > 0 {
+		err := common.Unmarshal(e.Error, &openAIError)
+		if err == nil && openAIError.Message != "" {
+			return &openAIError
+		}
+	}
+	return nil
+}
+
 func (e GeneralErrorResponse) ToMessage() string {
-	if e.Error.Message != "" {
-		return e.Error.Message
+	if len(e.Error) > 0 {
+		switch common.GetJsonType(e.Error) {
+		case "object":
+			var openAIError types.OpenAIError
+			err := common.Unmarshal(e.Error, &openAIError)
+			if err == nil && openAIError.Message != "" {
+				return openAIError.Message
+			}
+		case "string":
+			var msg string
+			err := common.Unmarshal(e.Error, &msg)
+			if err == nil && msg != "" {
+				return msg
+			}
+		default:
+			return string(e.Error)
+		}
 	}
 	if e.Message != "" {
 		return e.Message
@@ -60,6 +79,9 @@ func (e GeneralErrorResponse) ToMessage() string {
 	}
 	if e.ErrorMsg != "" {
 		return e.ErrorMsg
+	}
+	if e.Detail != "" {
+		return e.Detail
 	}
 	if e.Header.Message != "" {
 		return e.Header.Message

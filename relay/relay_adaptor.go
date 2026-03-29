@@ -1,50 +1,53 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package relay
 
 import (
-	commonconstant "veloera/constant"
-	"veloera/relay/channel"
-	"veloera/relay/channel/ali"
-	"veloera/relay/channel/aws"
-	"veloera/relay/channel/baidu"
-	"veloera/relay/channel/baidu_v2"
-	"veloera/relay/channel/claude"
-	"veloera/relay/channel/cloudflare"
-	"veloera/relay/channel/cohere"
-	"veloera/relay/channel/deepseek"
-	"veloera/relay/channel/dify"
-	"veloera/relay/channel/gemini"
-	"veloera/relay/channel/jina"
-	"veloera/relay/channel/mistral"
-	"veloera/relay/channel/mokaai"
-	"veloera/relay/channel/ollama"
-	"veloera/relay/channel/openai"
-	"veloera/relay/channel/palm"
-	"veloera/relay/channel/perplexity"
-	"veloera/relay/channel/siliconflow"
-	"veloera/relay/channel/task/suno"
-	"veloera/relay/channel/tencent"
-	"veloera/relay/channel/vertex"
-	"veloera/relay/channel/volcengine"
-	"veloera/relay/channel/xai"
-	"veloera/relay/channel/xunfei"
-	"veloera/relay/channel/zhipu"
-	"veloera/relay/constant"
+	"strconv"
+
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/ali"
+	"github.com/QuantumNous/new-api/relay/channel/aws"
+	"github.com/QuantumNous/new-api/relay/channel/baidu"
+	"github.com/QuantumNous/new-api/relay/channel/baidu_v2"
+	"github.com/QuantumNous/new-api/relay/channel/claude"
+	"github.com/QuantumNous/new-api/relay/channel/cloudflare"
+	"github.com/QuantumNous/new-api/relay/channel/codex"
+	"github.com/QuantumNous/new-api/relay/channel/cohere"
+	"github.com/QuantumNous/new-api/relay/channel/coze"
+	"github.com/QuantumNous/new-api/relay/channel/deepseek"
+	"github.com/QuantumNous/new-api/relay/channel/dify"
+	"github.com/QuantumNous/new-api/relay/channel/gemini"
+	"github.com/QuantumNous/new-api/relay/channel/jimeng"
+	"github.com/QuantumNous/new-api/relay/channel/jina"
+	"github.com/QuantumNous/new-api/relay/channel/minimax"
+	"github.com/QuantumNous/new-api/relay/channel/mistral"
+	"github.com/QuantumNous/new-api/relay/channel/mokaai"
+	"github.com/QuantumNous/new-api/relay/channel/moonshot"
+	"github.com/QuantumNous/new-api/relay/channel/ollama"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
+	"github.com/QuantumNous/new-api/relay/channel/palm"
+	"github.com/QuantumNous/new-api/relay/channel/perplexity"
+	"github.com/QuantumNous/new-api/relay/channel/replicate"
+	"github.com/QuantumNous/new-api/relay/channel/siliconflow"
+	"github.com/QuantumNous/new-api/relay/channel/submodel"
+	taskali "github.com/QuantumNous/new-api/relay/channel/task/ali"
+	taskdoubao "github.com/QuantumNous/new-api/relay/channel/task/doubao"
+	taskGemini "github.com/QuantumNous/new-api/relay/channel/task/gemini"
+	"github.com/QuantumNous/new-api/relay/channel/task/hailuo"
+	taskjimeng "github.com/QuantumNous/new-api/relay/channel/task/jimeng"
+	"github.com/QuantumNous/new-api/relay/channel/task/kling"
+	tasksora "github.com/QuantumNous/new-api/relay/channel/task/sora"
+	"github.com/QuantumNous/new-api/relay/channel/task/suno"
+	taskvertex "github.com/QuantumNous/new-api/relay/channel/task/vertex"
+	taskVidu "github.com/QuantumNous/new-api/relay/channel/task/vidu"
+	"github.com/QuantumNous/new-api/relay/channel/tencent"
+	"github.com/QuantumNous/new-api/relay/channel/vertex"
+	"github.com/QuantumNous/new-api/relay/channel/volcengine"
+	"github.com/QuantumNous/new-api/relay/channel/xai"
+	"github.com/QuantumNous/new-api/relay/channel/xunfei"
+	"github.com/QuantumNous/new-api/relay/channel/zhipu"
+	"github.com/QuantumNous/new-api/relay/channel/zhipu_4v"
+	"github.com/gin-gonic/gin"
 )
 
 func GetAdaptor(apiType int) channel.Adaptor {
@@ -67,6 +70,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &xunfei.Adaptor{}
 	case constant.APITypeZhipu:
 		return &zhipu.Adaptor{}
+	case constant.APITypeZhipuV4:
+		return &zhipu_4v.Adaptor{}
 	case constant.APITypeOllama:
 		return &ollama.Adaptor{}
 	case constant.APITypePerplexity:
@@ -99,20 +104,62 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &openai.Adaptor{}
 	case constant.APITypeXinference:
 		return &openai.Adaptor{}
-	case constant.APITypeGitHub:
-		return &openai.Adaptor{}
 	case constant.APITypeXai:
 		return &xai.Adaptor{}
+	case constant.APITypeCoze:
+		return &coze.Adaptor{}
+	case constant.APITypeJimeng:
+		return &jimeng.Adaptor{}
+	case constant.APITypeMoonshot:
+		return &moonshot.Adaptor{} // Moonshot uses Claude API
+	case constant.APITypeSubmodel:
+		return &submodel.Adaptor{}
+	case constant.APITypeMiniMax:
+		return &minimax.Adaptor{}
+	case constant.APITypeReplicate:
+		return &replicate.Adaptor{}
+	case constant.APITypeCodex:
+		return &codex.Adaptor{}
 	}
 	return nil
 }
 
-func GetTaskAdaptor(platform commonconstant.TaskPlatform) channel.TaskAdaptor {
+func GetTaskPlatform(c *gin.Context) constant.TaskPlatform {
+	channelType := c.GetInt("channel_type")
+	if channelType > 0 {
+		return constant.TaskPlatform(strconv.Itoa(channelType))
+	}
+	return constant.TaskPlatform(c.GetString("platform"))
+}
+
+func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 	switch platform {
 	//case constant.APITypeAIProxyLibrary:
 	//	return &aiproxy.Adaptor{}
-	case commonconstant.TaskPlatformSuno:
+	case constant.TaskPlatformSuno:
 		return &suno.TaskAdaptor{}
+	}
+	if channelType, err := strconv.ParseInt(string(platform), 10, 64); err == nil {
+		switch channelType {
+		case constant.ChannelTypeAli:
+			return &taskali.TaskAdaptor{}
+		case constant.ChannelTypeKling:
+			return &kling.TaskAdaptor{}
+		case constant.ChannelTypeJimeng:
+			return &taskjimeng.TaskAdaptor{}
+		case constant.ChannelTypeVertexAi:
+			return &taskvertex.TaskAdaptor{}
+		case constant.ChannelTypeVidu:
+			return &taskVidu.TaskAdaptor{}
+		case constant.ChannelTypeDoubaoVideo, constant.ChannelTypeVolcEngine:
+			return &taskdoubao.TaskAdaptor{}
+		case constant.ChannelTypeSora, constant.ChannelTypeOpenAI:
+			return &tasksora.TaskAdaptor{}
+		case constant.ChannelTypeGemini:
+			return &taskGemini.TaskAdaptor{}
+		case constant.ChannelTypeMiniMax:
+			return &hailuo.TaskAdaptor{}
+		}
 	}
 	return nil
 }

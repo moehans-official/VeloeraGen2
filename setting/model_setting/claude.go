@@ -1,24 +1,10 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package model_setting
 
 import (
 	"net/http"
-	"veloera/setting/config"
+	"strings"
+
+	"github.com/QuantumNous/new-api/setting/config"
 )
 
 //var claudeHeadersSettings = map[string][]string{}
@@ -65,12 +51,34 @@ func GetClaudeSettings() *ClaudeSettings {
 func (c *ClaudeSettings) WriteHeaders(originModel string, httpHeader *http.Header) {
 	if headers, ok := c.HeadersSettings[originModel]; ok {
 		for headerKey, headerValues := range headers {
-			httpHeader.Del(headerKey)
-			for _, headerValue := range headerValues {
-				httpHeader.Add(headerKey, headerValue)
+			mergedValues := normalizeHeaderListValues(
+				append(append([]string(nil), httpHeader.Values(headerKey)...), headerValues...),
+			)
+			if len(mergedValues) == 0 {
+				continue
 			}
+			httpHeader.Set(headerKey, strings.Join(mergedValues, ","))
 		}
 	}
+}
+
+func normalizeHeaderListValues(values []string) []string {
+	normalizedValues := make([]string, 0, len(values))
+	seenValues := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		for _, item := range strings.Split(value, ",") {
+			normalizedItem := strings.TrimSpace(item)
+			if normalizedItem == "" {
+				continue
+			}
+			if _, exists := seenValues[normalizedItem]; exists {
+				continue
+			}
+			seenValues[normalizedItem] = struct{}{}
+			normalizedValues = append(normalizedValues, normalizedItem)
+		}
+	}
+	return normalizedValues
 }
 
 func (c *ClaudeSettings) GetDefaultMaxTokens(model string) int {

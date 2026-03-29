@@ -1,29 +1,56 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package mistral
 
 import (
-	"veloera/dto"
+	"regexp"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 )
+
+var mistralToolCallIdRegexp = regexp.MustCompile("^[a-zA-Z0-9]{9}$")
 
 func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAIRequest {
 	messages := make([]dto.Message, 0, len(request.Messages))
+	idMap := make(map[string]string)
 	for _, message := range request.Messages {
+		// 1. tool_calls.id
+		toolCalls := message.ParseToolCalls()
+		if toolCalls != nil {
+			for i := range toolCalls {
+				if !mistralToolCallIdRegexp.MatchString(toolCalls[i].ID) {
+					if newId, ok := idMap[toolCalls[i].ID]; ok {
+						toolCalls[i].ID = newId
+					} else {
+						newId, err := common.GenerateRandomCharsKey(9)
+						if err == nil {
+							idMap[toolCalls[i].ID] = newId
+							toolCalls[i].ID = newId
+						}
+					}
+				}
+			}
+			message.SetToolCalls(toolCalls)
+		}
+
+		// 2. tool_call_id
+		if message.ToolCallId != "" {
+			if newId, ok := idMap[message.ToolCallId]; ok {
+				message.ToolCallId = newId
+			} else {
+				if !mistralToolCallIdRegexp.MatchString(message.ToolCallId) {
+					newId, err := common.GenerateRandomCharsKey(9)
+					if err == nil {
+						idMap[message.ToolCallId] = newId
+						message.ToolCallId = newId
+					}
+				}
+			}
+		}
+
 		mediaMessages := message.ParseContent()
+		if message.Role == "assistant" && message.ToolCalls != nil && message.Content == "" {
+			mediaMessages = []dto.MediaContent{}
+		}
 		for j, mediaMessage := range mediaMessages {
 			if mediaMessage.Type == dto.ContentTypeImageURL {
 				imageUrl := mediaMessage.GetImageMedia()
@@ -39,14 +66,18 @@ func requestOpenAI2Mistral(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAI
 			ToolCallId: message.ToolCallId,
 		})
 	}
-	return &dto.GeneralOpenAIRequest{
+	out := &dto.GeneralOpenAIRequest{
 		Model:       request.Model,
 		Stream:      request.Stream,
 		Messages:    messages,
 		Temperature: request.Temperature,
 		TopP:        request.TopP,
-		MaxTokens:   request.MaxTokens,
 		Tools:       request.Tools,
 		ToolChoice:  request.ToolChoice,
 	}
+	if request.MaxTokens != nil || request.MaxCompletionTokens != nil {
+		maxTokens := request.GetMaxTokens()
+		out.MaxTokens = &maxTokens
+	}
+	return out
 }

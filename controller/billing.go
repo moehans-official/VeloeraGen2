@@ -1,26 +1,11 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
-	"veloera/common"
-	"veloera/dto"
-	"veloera/model"
 )
 
 func GetSubscription(c *gin.Context) {
@@ -44,7 +29,7 @@ func GetSubscription(c *gin.Context) {
 		expiredTime = 0
 	}
 	if err != nil {
-		openAIError := dto.OpenAIError{
+		openAIError := types.OpenAIError{
 			Message: err.Error(),
 			Type:    "upstream_error",
 		}
@@ -55,8 +40,18 @@ func GetSubscription(c *gin.Context) {
 	}
 	quota := remainQuota + usedQuota
 	amount := float64(quota)
-	if common.DisplayInCurrencyEnabled {
-		amount /= common.QuotaPerUnit
+	// OpenAI 兼容接口中的 *_USD 字段含义保持“额度单位”对应值：
+	// 我们将其解释为以“站点展示类型”为准：
+	// - USD: 直接除以 QuotaPerUnit
+	// - CNY: 先转 USD 再乘汇率
+	// - TOKENS: 直接使用 tokens 数量
+	switch operation_setting.GetQuotaDisplayType() {
+	case operation_setting.QuotaDisplayTypeCNY:
+		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+	case operation_setting.QuotaDisplayTypeTokens:
+		// amount 保持 tokens 数值
+	default:
+		amount = amount / common.QuotaPerUnit
 	}
 	if token != nil && token.UnlimitedQuota {
 		amount = 100000000
@@ -86,9 +81,9 @@ func GetUsage(c *gin.Context) {
 		quota, err = model.GetUserUsedQuota(userId)
 	}
 	if err != nil {
-		openAIError := dto.OpenAIError{
+		openAIError := types.OpenAIError{
 			Message: err.Error(),
-			Type:    "veloera_error",
+			Type:    "new_api_error",
 		}
 		c.JSON(200, gin.H{
 			"error": openAIError,
@@ -96,8 +91,13 @@ func GetUsage(c *gin.Context) {
 		return
 	}
 	amount := float64(quota)
-	if common.DisplayInCurrencyEnabled {
-		amount /= common.QuotaPerUnit
+	switch operation_setting.GetQuotaDisplayType() {
+	case operation_setting.QuotaDisplayTypeCNY:
+		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+	case operation_setting.QuotaDisplayTypeTokens:
+		// tokens 保持原值
+	default:
+		amount = amount / common.QuotaPerUnit
 	}
 	usage := OpenAIUsageResponse{
 		Object:     "list",

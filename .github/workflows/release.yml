@@ -1,206 +1,156 @@
-name: Create Release
-
+name: Release (Linux, macOS, Windows)
 permissions:
   contents: write
 
 on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: 'reason'
+        required: false
   push:
     tags:
       - '*'
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name for release (e.g. v1.0.0)'
-        required: true
-        type: string
+      - '!*-alpha*'
 
 jobs:
-  build-frontend:
-    name: Build Frontend
+  linux:
+    name: Linux Release
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 1
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+          fetch-depth: 0
+      - name: Determine Version
+        run: |
+          VERSION=$(git describe --tags)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          version: 10
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'pnpm'
-          cache-dependency-path: 'web/pnpm-lock.yaml'
-
+          bun-version: latest
       - name: Build Frontend
         env:
           CI: ""
         run: |
           cd web
-          pnpm install
-          VITE_REACT_APP_VERSION=$(git describe --tags) pnpm run build
-
-      - name: Upload Frontend build
-        uses: actions/upload-artifact@v4
+          bun install
+          DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$VERSION bun run build
+          cd ..
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          name: frontend-build
-          path: web/dist
-          retention-days: 1
-
-  build-linux:
-    name: Build Linux Version
-    needs: build-frontend
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch:
-          - amd64
-          - arm64
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Download Frontend build
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-build
-          path: web/dist
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-
-      - name: Install cross-compiler for arm64
-        if: matrix.arch == 'arm64'
+          go-version: '>=1.25.1'
+      - name: Build Backend (amd64)
+        run: |
+          go mod download
+          go build -ldflags "-s -w -X 'new-api/common.Version=$VERSION' -extldflags '-static'" -o new-api-$VERSION
+      - name: Build Backend (arm64)
         run: |
           sudo apt-get update
           DEBIAN_FRONTEND=noninteractive sudo apt-get install -y gcc-aarch64-linux-gnu
+          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X 'new-api/common.Version=$VERSION' -extldflags '-static'" -o new-api-arm64-$VERSION
+      - name: Generate checksums
+        run: sha256sum new-api-* > checksums-linux.txt
 
-      - name: Build Backend (amd64)
-        if: matrix.arch == 'amd64'
-        run: |
-          go build -ldflags "-s -w -X 'veloera/common.Version=$(git describe --tags)' -extldflags '-static'" -o veloera-linux
-
-      - name: Build Backend (arm64)
-        if: matrix.arch == 'arm64'
-        run: |
-          CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w -X 'veloera/common.Version=$(git describe --tags)' -extldflags '-static'" -o veloera-linux-arm64
-
-      - name: Upload Linux build
-        uses: actions/upload-artifact@v4
+      - name: Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: linux-${{ matrix.arch }}
-          path: veloera-linux*
-          retention-days: 1
+          files: |
+            new-api-*
+            checksums-linux.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-windows:
-    name: Build Windows Version
-    needs: build-frontend
+  macos:
+    name: macOS Release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Determine Version
+        run: |
+          VERSION=$(git describe --tags)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Build Frontend
+        env:
+          CI: ""
+          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: |
+          cd web
+          bun install
+          DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$VERSION bun run build
+          cd ..
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '>=1.25.1'
+      - name: Build Backend
+        run: |
+          go mod download
+          go build -ldflags "-X 'new-api/common.Version=$VERSION'" -o new-api-macos-$VERSION
+      - name: Generate checksums
+        run: shasum -a 256 new-api-macos-* > checksums-macos.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            new-api-macos-*
+            checksums-macos.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    name: Windows Release
     runs-on: windows-latest
     defaults:
       run:
         shell: bash
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 1
-
-      - name: Download Frontend build
-        uses: actions/download-artifact@v4
+          fetch-depth: 0
+      - name: Determine Version
+        run: |
+          VERSION=$(git describe --tags)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          name: frontend-build
-          path: web/dist
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+          bun-version: latest
+      - name: Build Frontend
+        env:
+          CI: ""
+        run: |
+          cd web
+          bun install
+          DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$VERSION bun run build
+          cd ..
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: 'go.mod'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-
+          go-version: '>=1.25.1'
       - name: Build Backend
         run: |
-          go build -ldflags "-s -w -X 'veloera/common.Version=$(git describe --tags)'" -o veloera-windows.exe
+          go mod download
+          go build -ldflags "-s -w -X 'new-api/common.Version=$VERSION'" -o new-api-$VERSION.exe
+      - name: Generate checksums
+        run: sha256sum new-api-*.exe > checksums-windows.txt
 
-      - name: Upload Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-builds
-          path: veloera-windows.exe
-          retention-days: 1
-
-  build-macos:
-    name: Build macOS Version
-    needs: build-frontend
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Download Frontend build
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-build
-          path: web/dist
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-
-      - name: Build Backend
-        run: |
-          go build -ldflags "-X 'veloera/common.Version=$(git describe --tags)'" -o veloera-macos
-
-      - name: Upload macOS build
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-builds
-          path: veloera-macos
-          retention-days: 1
-
-  create-release:
-    name: Create and Publish Release
-    needs: [build-linux, build-windows, build-macos]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      
-      - name: Download all build artifacts
-        uses: actions/download-artifact@v4
-        
-      - name: Display downloaded files
-        run: ls -R
-        
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            linux-amd64/veloera-linux
-            linux-arm64/veloera-linux-arm64
-            windows-builds/veloera-windows.exe
-            macos-builds/veloera-macos
-          draft: false
-          generate_release_notes: true
+            new-api-*.exe
+            checksums-windows.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

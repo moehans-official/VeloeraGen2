@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
@@ -24,12 +8,17 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"veloera/common"
-	"veloera/model"
-	"veloera/setting"
+	"sync"
 
-	"veloera/constant"
-	"veloera/middleware"
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
+
+	"github.com/QuantumNous/new-api/constant"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -42,28 +31,19 @@ type LoginRequest struct {
 
 func Login(c *gin.Context) {
 	if !common.PasswordLoginEnabled {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了密码登录",
-			"success": false,
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserPasswordLoginDisabled)
 		return
 	}
 	var loginRequest LoginRequest
 	err := json.NewDecoder(c.Request.Body).Decode(&loginRequest)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无效的参数",
-			"success": false,
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 	username := loginRequest.Username
 	password := loginRequest.Password
 	if username == "" || password == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无效的参数",
-			"success": false,
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 	user := model.User{
@@ -78,53 +58,56 @@ func Login(c *gin.Context) {
 		})
 		return
 	}
+
+	// 检查是否启用2FA
+	if model.IsTwoFAEnabled(user.Id) {
+		// 设置pending session，等待2FA验证
+		session := sessions.Default(c)
+		session.Set("pending_username", user.Username)
+		session.Set("pending_user_id", user.Id)
+		err := session.Save()
+		if err != nil {
+			common.ApiErrorI18n(c, i18n.MsgUserSessionSaveFailed)
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": i18n.T(c, i18n.MsgUserRequire2FA),
+			"success": true,
+			"data": map[string]interface{}{
+				"require_2fa": true,
+			},
+		})
+		return
+	}
+
 	setupLogin(&user, c)
 }
 
 // setup session & cookies and then return user info
 func setupLogin(user *model.User, c *gin.Context) {
 	session := sessions.Default(c)
-
-	// Clear any existing session data first
-	session.Clear()
-	err := session.Save()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无法清除旧会话信息，请重试",
-			"success": false,
-		})
-		return
-	}
-
-	// Set new session data
 	session.Set("id", user.Id)
 	session.Set("username", user.Username)
 	session.Set("role", user.Role)
 	session.Set("status", user.Status)
 	session.Set("group", user.Group)
-
-	err = session.Save()
+	err := session.Save()
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无法保存会话信息，请重试",
-			"success": false,
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserSessionSaveFailed)
 		return
 	}
-
-	cleanUser := model.User{
-		Id:          user.Id,
-		Username:    user.Username,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,
-		Status:      user.Status,
-		Group:       user.Group,
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"message": "",
 		"success": true,
-		"data":    cleanUser,
+		"data": map[string]any{
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"role":         user.Role,
+			"status":       user.Status,
+			"group":        user.Group,
+		},
 	})
 }
 
@@ -147,105 +130,72 @@ func Logout(c *gin.Context) {
 
 func Register(c *gin.Context) {
 	if !common.RegisterEnabled {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了新用户注册",
-			"success": false,
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
 		return
 	}
 	if !common.PasswordRegisterEnabled {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册",
-			"success": false,
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserPasswordRegisterDisabled)
 		return
 	}
 	var user model.User
 	err := json.NewDecoder(c.Request.Body).Decode(&user)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-
 	if err := common.Validate.Struct(&user); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "输入不合法 " + err.Error(),
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}
 	if common.EmailVerificationEnabled {
 		if user.Email == "" || user.VerificationCode == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "管理员开启了邮箱验证，请输入邮箱地址和验证码",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserEmailVerificationRequired)
 			return
 		}
 		if !common.VerifyCodeWithKey(user.Email, user.VerificationCode, common.EmailVerificationPurpose) {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "验证码错误或已过期",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserVerificationCodeError)
 			return
 		}
 	}
 	exist, err := model.CheckUserExistOrDeleted(user.Username, user.Email)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "数据库错误，请稍后重试",
-		})
-		common.SysError(fmt.Sprintf("CheckUserExistOrDeleted error: %v", err))
+		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		common.SysLog(fmt.Sprintf("CheckUserExistOrDeleted error: %v", err))
 		return
 	}
 	if exist {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "用户名已存在，或已注销",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
 	affCode := user.AffCode // this code is the inviter's code, not the user's own code
-	inviterId, err := model.GetUserIdByAffCode(affCode)
+	inviterId, _ := model.GetUserIdByAffCode(affCode)
 	cleanUser := model.User{
 		Username:    user.Username,
 		Password:    user.Password,
 		DisplayName: user.Username,
 		InviterId:   inviterId,
+		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
 	}
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
 	}
 	if err := cleanUser.Insert(inviterId); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 
 	// 获取插入后的用户ID
 	var insertedUser model.User
 	if err := model.DB.Where("username = ?", cleanUser.Username).First(&insertedUser).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "用户注册失败或用户ID获取失败",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserRegisterFailed)
 		return
 	}
 	// 生成默认令牌
 	if constant.GenerateDefaultToken {
 		key, err := common.GenerateKey()
 		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "生成默认令牌失败",
-			})
-			common.SysError("failed to generate token key: " + err.Error())
+			common.ApiErrorI18n(c, i18n.MsgUserDefaultTokenFailed)
+			common.SysLog("failed to generate token key: " + err.Error())
 			return
 		}
 		// 生成默认令牌
@@ -260,11 +210,11 @@ func Register(c *gin.Context) {
 			UnlimitedQuota:     true,
 			ModelLimitsEnabled: false,
 		}
+		if setting.DefaultUseAutoGroup {
+			token.Group = "auto"
+		}
 		if err := token.Insert(); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "创建默认令牌失败",
-			})
+			common.ApiErrorI18n(c, i18n.MsgCreateDefaultTokenErr)
 			return
 		}
 	}
@@ -277,91 +227,50 @@ func Register(c *gin.Context) {
 }
 
 func GetAllUsers(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	pageSize, _ := strconv.Atoi(c.Query("page_size"))
-	if p < 1 {
-		p = 1
-	}
-	if pageSize < 0 {
-		pageSize = common.ItemsPerPage
-	}
-	users, total, err := model.GetAllUsers((p-1)*pageSize, pageSize)
+	pageInfo := common.GetPageQuery(c)
+	users, total, err := model.GetAllUsers(pageInfo)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data": gin.H{
-			"items":     users,
-			"total":     total,
-			"page":      p,
-			"page_size": pageSize,
-		},
-	})
+
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(users)
+
+	common.ApiSuccess(c, pageInfo)
 	return
 }
 
 func SearchUsers(c *gin.Context) {
 	keyword := c.Query("keyword")
 	group := c.Query("group")
-	p, _ := strconv.Atoi(c.Query("p"))
-	pageSize, _ := strconv.Atoi(c.Query("page_size"))
-	if p < 1 {
-		p = 1
-	}
-	if pageSize < 0 {
-		pageSize = common.ItemsPerPage
-	}
-	startIdx := (p - 1) * pageSize
-	users, total, err := model.SearchUsers(keyword, group, startIdx, pageSize)
+	pageInfo := common.GetPageQuery(c)
+	users, total, err := model.SearchUsers(keyword, group, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data": gin.H{
-			"items":     users,
-			"total":     total,
-			"page":      p,
-			"page_size": pageSize,
-		},
-	})
+
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(users)
+	common.ApiSuccess(c, pageInfo)
 	return
 }
 
 func GetUser(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	user, err := model.GetUserById(id, false)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	myRole := c.GetInt("role")
 	if myRole <= user.Role && myRole != common.RoleRootUser {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权获取同级或更高等级用户的信息",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -376,38 +285,26 @@ func GenerateAccessToken(c *gin.Context) {
 	id := c.GetInt("id")
 	user, err := model.GetUserById(id, true)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	// get rand int 28-32
 	randI := common.GetRandomInt(4)
 	key, err := common.GenerateRandomKey(29 + randI)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "生成失败",
-		})
-		common.SysError("failed to generate key: " + err.Error())
+		common.ApiErrorI18n(c, i18n.MsgGenerateFailed)
+		common.SysLog("failed to generate key: " + err.Error())
 		return
 	}
 	user.SetAccessToken(key)
 
 	if model.DB.Where("access_token = ?", user.AccessToken).First(user).RowsAffected != 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "请重试，系统生成的 UUID 竟然重复了！",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUuidDuplicate)
 		return
 	}
 
 	if err := user.Update(false); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 
@@ -427,42 +324,27 @@ func TransferAffQuota(c *gin.Context) {
 	id := c.GetInt("id")
 	user, err := model.GetUserById(id, true)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	tran := TransferAffQuotaRequest{}
 	if err := c.ShouldBindJSON(&tran); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	err = user.TransferAffQuotaToQuota(tran.Quota)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "划转失败 " + err.Error(),
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserTransferFailed, map[string]any{"Error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "划转成功",
-	})
+	common.ApiSuccessI18n(c, i18n.MsgUserTransferSuccess, nil)
 }
 
 func GetAffCode(c *gin.Context) {
 	id := c.GetInt("id")
 	user, err := model.GetUserById(id, true)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	if user.AffCode == "" {
@@ -485,20 +367,146 @@ func GetAffCode(c *gin.Context) {
 
 func GetSelf(c *gin.Context) {
 	id := c.GetInt("id")
+	userRole := c.GetInt("role")
 	user, err := model.GetUserById(id, false)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
+	// Hide admin remarks: set to empty to trigger omitempty tag, ensuring the remark field is not included in JSON returned to regular users
+	user.Remark = ""
+
+	// 计算用户权限信息
+	permissions := calculateUserPermissions(userRole)
+
+	// 获取用户设置并提取sidebar_modules
+	userSetting := user.GetSetting()
+
+	// 构建响应数据，包含用户信息和权限
+	responseData := map[string]interface{}{
+		"id":                user.Id,
+		"username":          user.Username,
+		"display_name":      user.DisplayName,
+		"role":              user.Role,
+		"status":            user.Status,
+		"email":             user.Email,
+		"github_id":         user.GitHubId,
+		"discord_id":        user.DiscordId,
+		"oidc_id":           user.OidcId,
+		"wechat_id":         user.WeChatId,
+		"telegram_id":       user.TelegramId,
+		"group":             user.Group,
+		"quota":             user.Quota,
+		"used_quota":        user.UsedQuota,
+		"request_count":     user.RequestCount,
+		"aff_code":          user.AffCode,
+		"aff_count":         user.AffCount,
+		"aff_quota":         user.AffQuota,
+		"aff_history_quota": user.AffHistoryQuota,
+		"inviter_id":        user.InviterId,
+		"linux_do_id":       user.LinuxDOId,
+		"setting":           user.Setting,
+		"stripe_customer":   user.StripeCustomer,
+		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
+		"permissions":       permissions,                // 新增权限字段
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    user,
+		"data":    responseData,
 	})
 	return
+}
+
+// 计算用户权限的辅助函数
+func calculateUserPermissions(userRole int) map[string]interface{} {
+	permissions := map[string]interface{}{}
+
+	// 根据用户角色计算权限
+	if userRole == common.RoleRootUser {
+		// 超级管理员不需要边栏设置功能
+		permissions["sidebar_settings"] = false
+		permissions["sidebar_modules"] = map[string]interface{}{}
+	} else if userRole == common.RoleAdminUser {
+		// 管理员可以设置边栏，但不包含系统设置功能
+		permissions["sidebar_settings"] = true
+		permissions["sidebar_modules"] = map[string]interface{}{
+			"admin": map[string]interface{}{
+				"setting": false, // 管理员不能访问系统设置
+			},
+		}
+	} else {
+		// 普通用户只能设置个人功能，不包含管理员区域
+		permissions["sidebar_settings"] = true
+		permissions["sidebar_modules"] = map[string]interface{}{
+			"admin": false, // 普通用户不能访问管理员区域
+		}
+	}
+
+	return permissions
+}
+
+// 根据用户角色生成默认的边栏配置
+func generateDefaultSidebarConfig(userRole int) string {
+	defaultConfig := map[string]interface{}{}
+
+	// 聊天区域 - 所有用户都可以访问
+	defaultConfig["chat"] = map[string]interface{}{
+		"enabled":    true,
+		"playground": true,
+		"chat":       true,
+	}
+
+	// 控制台区域 - 所有用户都可以访问
+	defaultConfig["console"] = map[string]interface{}{
+		"enabled":    true,
+		"detail":     true,
+		"token":      true,
+		"log":        true,
+		"midjourney": true,
+		"task":       true,
+	}
+
+	// 个人中心区域 - 所有用户都可以访问
+	defaultConfig["personal"] = map[string]interface{}{
+		"enabled":  true,
+		"topup":    true,
+		"personal": true,
+	}
+
+	// 管理员区域 - 根据角色决定
+	if userRole == common.RoleAdminUser {
+		// 管理员可以访问管理员区域，但不能访问系统设置
+		defaultConfig["admin"] = map[string]interface{}{
+			"enabled":    true,
+			"channel":    true,
+			"models":     true,
+			"redemption": true,
+			"user":       true,
+			"setting":    false, // 管理员不能访问系统设置
+		}
+	} else if userRole == common.RoleRootUser {
+		// 超级管理员可以访问所有功能
+		defaultConfig["admin"] = map[string]interface{}{
+			"enabled":    true,
+			"channel":    true,
+			"models":     true,
+			"redemption": true,
+			"user":       true,
+			"setting":    true,
+		}
+	}
+	// 普通用户不包含admin区域
+
+	// 转换为JSON字符串
+	configBytes, err := json.Marshal(defaultConfig)
+	if err != nil {
+		common.SysLog("生成默认边栏配置失败: " + err.Error())
+		return ""
+	}
+
+	return string(configBytes)
 }
 
 func GetUserModels(c *gin.Context) {
@@ -508,95 +516,18 @@ func GetUserModels(c *gin.Context) {
 	}
 	user, err := model.GetUserCache(id)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
-	groups := setting.GetUserUsableGroups(user.Group)
+	groups := service.GetUserUsableGroups(user.Group)
 	var models []string
-	addedModels := make(map[string]bool) // Track added models to avoid duplicates
-
-	// Get prefix channels for the user's group
-	prefixChannels := middleware.GetPrefixChannels(user.Group)
-	modelPrefixMap := make(map[string][]string) // Map base model to all prefixed versions
-
-	for prefix, channels := range prefixChannels {
-		if prefix == "" {
-			continue // Skip channels without prefixes
-		}
-		for _, channel := range channels {
-			for _, modelName := range channel.GetModels() {
-				prefixedModel := prefix + modelName
-				// Check if this prefixed model already exists to avoid duplicates
-				exists := false
-				for _, existing := range modelPrefixMap[modelName] {
-					if existing == prefixedModel {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					modelPrefixMap[modelName] = append(modelPrefixMap[modelName], prefixedModel)
-				}
-			}
-		}
-	}
-
-	// First add all models with prefixes that are allowed for the user's group
 	for group := range groups {
-		groupModels := model.GetGroupModels(group)
-		for _, baseModel := range groupModels {
-			if prefixedModels, ok := modelPrefixMap[baseModel]; ok {
-				for _, prefixedModel := range prefixedModels {
-					if !addedModels[prefixedModel] {
-						models = append(models, prefixedModel)
-						addedModels[prefixedModel] = true
-					}
-				}
+		for _, g := range model.GetGroupEnabledModels(group) {
+			if !common.StringsContains(models, g) {
+				models = append(models, g)
 			}
 		}
 	}
-
-	// Then add remaining models without prefixes that are allowed for the user's group
-	// Only add base models that don't have any prefixed versions already added
-	for group := range groups {
-		groupModels := model.GetGroupModels(group)
-		for _, baseModel := range groupModels {
-			// Skip if this base model was already added
-			if addedModels[baseModel] {
-				continue
-			}
-
-			// Check if any prefixed version of this base model was already added
-			hasAddedPrefixedVersion := false
-			if prefixedModels, ok := modelPrefixMap[baseModel]; ok {
-				for _, prefixedName := range prefixedModels {
-					if addedModels[prefixedName] {
-						hasAddedPrefixedVersion = true
-						break
-					}
-				}
-			}
-
-			// Only add the base model if no prefixed version was added
-			if !hasAddedPrefixedVersion {
-				models = append(models, baseModel)
-				addedModels[baseModel] = true
-			}
-		}
-	}
-
-	// 添加虚拟模型到返回列表中
-	virtualModels := model.GetAllVirtualModels()
-	for _, virtualModel := range virtualModels {
-		if !addedModels[virtualModel] {
-			models = append(models, virtualModel)
-			addedModels[virtualModel] = true
-		}
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -609,43 +540,28 @@ func UpdateUser(c *gin.Context) {
 	var updatedUser model.User
 	err := json.NewDecoder(c.Request.Body).Decode(&updatedUser)
 	if err != nil || updatedUser.Id == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 	if updatedUser.Password == "" {
 		updatedUser.Password = "$I_LOVE_U" // make Validator happy :)
 	}
 	if err := common.Validate.Struct(&updatedUser); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "输入不合法 " + err.Error(),
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}
 	originUser, err := model.GetUserById(updatedUser.Id, false)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	myRole := c.GetInt("role")
 	if myRole <= originUser.Role && myRole != common.RoleRootUser {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权更新同权限等级或更高权限等级的用户信息",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
 	if myRole <= updatedUser.Role && myRole != common.RoleRootUser {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权将其他用户权限等级提升到大于等于自己的权限等级",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserCannotCreateHigherLevel)
 		return
 	}
 	if updatedUser.Password == "$I_LOVE_U" {
@@ -653,14 +569,11 @@ func UpdateUser(c *gin.Context) {
 	}
 	updatePassword := updatedUser.Password != ""
 	if err := updatedUser.Edit(updatePassword); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	if originUser.Quota != updatedUser.Quota {
-		model.RecordLog(originUser.Id, model.LogTypeManage, fmt.Sprintf("管理员将用户额度从 %s修改为 %s", common.LogQuota(originUser.Quota), common.LogQuota(updatedUser.Quota)))
+		model.RecordLog(originUser.Id, model.LogTypeManage, fmt.Sprintf("管理员将用户额度从 %s修改为 %s", logger.LogQuota(originUser.Quota), logger.LogQuota(updatedUser.Quota)))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -669,24 +582,126 @@ func UpdateUser(c *gin.Context) {
 	return
 }
 
-func UpdateSelf(c *gin.Context) {
-	var user model.User
-	err := json.NewDecoder(c.Request.Body).Decode(&user)
+func AdminClearUserBinding(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
+
+	bindingType := strings.ToLower(strings.TrimSpace(c.Param("binding_type")))
+	if bindingType == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	user, err := model.GetUserById(id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	myRole := c.GetInt("role")
+	if myRole <= user.Role && myRole != common.RoleRootUser {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
+		return
+	}
+
+	if err := user.ClearBinding(bindingType); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	model.RecordLog(user.Id, model.LogTypeManage, fmt.Sprintf("admin cleared %s binding for user %s", bindingType, user.Username))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "success",
+	})
+}
+
+func UpdateSelf(c *gin.Context) {
+	var requestData map[string]interface{}
+	err := json.NewDecoder(c.Request.Body).Decode(&requestData)
+	if err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	// 检查是否是用户设置更新请求 (sidebar_modules 或 language)
+	if sidebarModules, sidebarExists := requestData["sidebar_modules"]; sidebarExists {
+		userId := c.GetInt("id")
+		user, err := model.GetUserById(userId, false)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+
+		// 获取当前用户设置
+		currentSetting := user.GetSetting()
+
+		// 更新sidebar_modules字段
+		if sidebarModulesStr, ok := sidebarModules.(string); ok {
+			currentSetting.SidebarModules = sidebarModulesStr
+		}
+
+		// 保存更新后的设置
+		user.SetSetting(currentSetting)
+		if err := user.Update(false); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
+			return
+		}
+
+		common.ApiSuccessI18n(c, i18n.MsgUpdateSuccess, nil)
+		return
+	}
+
+	// 检查是否是语言偏好更新请求
+	if language, langExists := requestData["language"]; langExists {
+		userId := c.GetInt("id")
+		user, err := model.GetUserById(userId, false)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+
+		// 获取当前用户设置
+		currentSetting := user.GetSetting()
+
+		// 更新language字段
+		if langStr, ok := language.(string); ok {
+			currentSetting.Language = langStr
+		}
+
+		// 保存更新后的设置
+		user.SetSetting(currentSetting)
+		if err := user.Update(false); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
+			return
+		}
+
+		common.ApiSuccessI18n(c, i18n.MsgUpdateSuccess, nil)
+		return
+	}
+
+	// 原有的用户信息更新逻辑
+	var user model.User
+	requestDataBytes, err := json.Marshal(requestData)
+	if err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	err = json.Unmarshal(requestDataBytes, &user)
+	if err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
 	if user.Password == "" {
 		user.Password = "$I_LOVE_U" // make Validator happy :)
 	}
 	if err := common.Validate.Struct(&user); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "输入不合法 " + err.Error(),
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidInput)
 		return
 	}
 
@@ -700,12 +715,13 @@ func UpdateSelf(c *gin.Context) {
 		user.Password = "" // rollback to what it should be
 		cleanUser.Password = ""
 	}
-	updatePassword := user.Password != ""
+	updatePassword, err := checkUpdatePassword(user.OriginalPassword, user.Password, cleanUser.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if err := cleanUser.Update(updatePassword); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 
@@ -716,29 +732,40 @@ func UpdateSelf(c *gin.Context) {
 	return
 }
 
+func checkUpdatePassword(originalPassword string, newPassword string, userId int) (updatePassword bool, err error) {
+	var currentUser *model.User
+	currentUser, err = model.GetUserById(userId, true)
+	if err != nil {
+		return
+	}
+
+	// 密码不为空,需要验证原密码
+	// 支持第一次账号绑定时原密码为空的情况
+	if !common.ValidatePasswordAndHash(originalPassword, currentUser.Password) && currentUser.Password != "" {
+		err = fmt.Errorf("原密码错误")
+		return
+	}
+	if newPassword == "" {
+		return
+	}
+	updatePassword = true
+	return
+}
+
 func DeleteUser(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	originUser, err := model.GetUserById(id, false)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	myRole := c.GetInt("role")
 	if myRole <= originUser.Role {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权删除同权限等级或更高权限等级的用户",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
 	err = model.HardDeleteUserById(id)
@@ -756,19 +783,13 @@ func DeleteSelf(c *gin.Context) {
 	user, _ := model.GetUserById(id, false)
 
 	if user.Role == common.RoleRootUser {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "不能删除超级管理员账户",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserCannotDeleteRootUser)
 		return
 	}
 
 	err := model.DeleteUserById(id)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -783,17 +804,11 @@ func CreateUser(c *gin.Context) {
 	err := json.NewDecoder(c.Request.Body).Decode(&user)
 	user.Username = strings.TrimSpace(user.Username)
 	if err != nil || user.Username == "" || user.Password == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 	if err := common.Validate.Struct(&user); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "输入不合法 " + err.Error(),
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}
 	if user.DisplayName == "" {
@@ -801,10 +816,7 @@ func CreateUser(c *gin.Context) {
 	}
 	myRole := c.GetInt("role")
 	if user.Role >= myRole {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无法创建权限大于等于自己的用户",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserCannotCreateHigherLevel)
 		return
 	}
 	// Even for admin users, we cannot fully trust them!
@@ -812,12 +824,10 @@ func CreateUser(c *gin.Context) {
 		Username:    user.Username,
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
+		Role:        user.Role, // 保持管理员设置的角色
 	}
 	if err := cleanUser.Insert(0); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 
@@ -839,10 +849,7 @@ func ManageUser(c *gin.Context) {
 	err := json.NewDecoder(c.Request.Body).Decode(&req)
 
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 	user := model.User{
@@ -851,38 +858,26 @@ func ManageUser(c *gin.Context) {
 	// Fill attributes
 	model.DB.Unscoped().Where(&user).First(&user)
 	if user.Id == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "用户不存在",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserNotExists)
 		return
 	}
 	myRole := c.GetInt("role")
 	if myRole <= user.Role && myRole != common.RoleRootUser {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权更新同权限等级或更高权限等级的用户信息",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
 	switch req.Action {
 	case "disable":
 		user.Status = common.UserStatusDisabled
 		if user.Role == common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无法禁用超级管理员用户",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserCannotDisableRootUser)
 			return
 		}
 	case "enable":
 		user.Status = common.UserStatusEnabled
 	case "delete":
 		if user.Role == common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无法删除超级管理员用户",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserCannotDeleteRootUser)
 			return
 		}
 		if err := user.Delete(); err != nil {
@@ -894,43 +889,28 @@ func ManageUser(c *gin.Context) {
 		}
 	case "promote":
 		if myRole != common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "普通管理员用户无法提升其他用户为管理员",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserAdminCannotPromote)
 			return
 		}
 		if user.Role >= common.RoleAdminUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "该用户已经是管理员",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserAlreadyAdmin)
 			return
 		}
 		user.Role = common.RoleAdminUser
 	case "demote":
 		if user.Role == common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无法降级超级管理员用户",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserCannotDemoteRootUser)
 			return
 		}
 		if user.Role == common.RoleCommonUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "该用户已经是普通用户",
-			})
+			common.ApiErrorI18n(c, i18n.MsgUserAlreadyCommon)
 			return
 		}
 		user.Role = common.RoleCommonUser
 	}
 
 	if err := user.Update(false); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	clearUser := model.User{
@@ -949,10 +929,7 @@ func EmailBind(c *gin.Context) {
 	email := c.Query("email")
 	code := c.Query("code")
 	if !common.VerifyCodeWithKey(email, code, common.EmailVerificationPurpose) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "验证码错误或已过期",
-		})
+		common.ApiErrorI18n(c, i18n.MsgUserVerificationCodeError)
 		return
 	}
 	session := sessions.Default(c)
@@ -962,20 +939,14 @@ func EmailBind(c *gin.Context) {
 	}
 	err := user.FillUserById()
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	user.Email = email
 	// no need to check if this email already taken, because we have used verification code to check it
 	err = user.Update(false)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -989,153 +960,169 @@ type topUpRequest struct {
 	Key string `json:"key"`
 }
 
+var topUpLocks sync.Map
+var topUpCreateLock sync.Mutex
+
+type topUpTryLock struct {
+	ch chan struct{}
+}
+
+func newTopUpTryLock() *topUpTryLock {
+	return &topUpTryLock{ch: make(chan struct{}, 1)}
+}
+
+func (l *topUpTryLock) TryLock() bool {
+	select {
+	case l.ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *topUpTryLock) Unlock() {
+	select {
+	case <-l.ch:
+	default:
+	}
+}
+
+func getTopUpLock(userID int) *topUpTryLock {
+	if v, ok := topUpLocks.Load(userID); ok {
+		return v.(*topUpTryLock)
+	}
+	topUpCreateLock.Lock()
+	defer topUpCreateLock.Unlock()
+	if v, ok := topUpLocks.Load(userID); ok {
+		return v.(*topUpTryLock)
+	}
+	l := newTopUpTryLock()
+	topUpLocks.Store(userID, l)
+	return l
+}
+
 func TopUp(c *gin.Context) {
+	id := c.GetInt("id")
+	lock := getTopUpLock(id)
+	if !lock.TryLock() {
+		common.ApiErrorI18n(c, i18n.MsgUserTopUpProcessing)
+		return
+	}
+	defer lock.Unlock()
 	req := topUpRequest{}
 	err := c.ShouldBindJSON(&req)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
 	}
-
-	// Validate turnstile if enabled
-	if common.TurnstileCheckEnabled {
-		response := c.Query("turnstile")
-		if response == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "Turnstile token 为空",
-			})
-			return
-		}
-
-		rawRes, err := http.PostForm("https://challenges.cloudflare.com/turnstile/v0/siteverify", url.Values{
-			"secret":   {common.TurnstileSecretKey},
-			"response": {response},
-			"remoteip": {c.ClientIP()},
-		})
-		if err != nil {
-			common.SysError(err.Error())
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-		defer rawRes.Body.Close()
-
-		var res struct {
-			Success bool `json:"success"`
-		}
-		err = json.NewDecoder(rawRes.Body).Decode(&res)
-		if err != nil {
-			common.SysError(err.Error())
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-
-		if !res.Success {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "Turnstile 校验失败，请刷新重试！",
-			})
-			return
-		}
-	}
-
-	id := c.GetInt("id")
-	quota, isGift, err := model.Redeem(req.Key, id) // 修改这里，接收所有三个返回值
+	quota, err := model.Redeem(req.Key, id)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		if errors.Is(err, model.ErrRedeemFailed) {
+			common.ApiErrorI18n(c, i18n.MsgRedeemFailed)
+			return
+		}
+		common.ApiError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data": gin.H{
-			"quota":   quota,
-			"is_gift": isGift, // 可以选择返回给前端，用于显示不同的提示信息
-		},
+		"data":    quota,
 	})
-	return
 }
 
 type UpdateUserSettingRequest struct {
-	QuotaWarningType           string  `json:"notify_type"`
-	QuotaWarningThreshold      float64 `json:"quota_warning_threshold"`
-	WebhookUrl                 string  `json:"webhook_url,omitempty"`
-	WebhookSecret              string  `json:"webhook_secret,omitempty"`
-	NotificationEmail          string  `json:"notification_email,omitempty"`
-	AcceptUnsetModelRatioModel bool    `json:"accept_unset_model_ratio_model"`
-	ShowIPInLogs               bool    `json:"show_ip_in_logs"`
+	QuotaWarningType                 string  `json:"notify_type"`
+	QuotaWarningThreshold            float64 `json:"quota_warning_threshold"`
+	WebhookUrl                       string  `json:"webhook_url,omitempty"`
+	WebhookSecret                    string  `json:"webhook_secret,omitempty"`
+	NotificationEmail                string  `json:"notification_email,omitempty"`
+	BarkUrl                          string  `json:"bark_url,omitempty"`
+	GotifyUrl                        string  `json:"gotify_url,omitempty"`
+	GotifyToken                      string  `json:"gotify_token,omitempty"`
+	GotifyPriority                   int     `json:"gotify_priority,omitempty"`
+	UpstreamModelUpdateNotifyEnabled *bool   `json:"upstream_model_update_notify_enabled,omitempty"`
+	AcceptUnsetModelRatioModel       bool    `json:"accept_unset_model_ratio_model"`
+	RecordIpLog                      bool    `json:"record_ip_log"`
 }
 
 func UpdateUserSetting(c *gin.Context) {
 	var req UpdateUserSettingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 
 	// 验证预警类型
-	if req.QuotaWarningType != constant.NotifyTypeEmail && req.QuotaWarningType != constant.NotifyTypeWebhook {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的预警类型",
-		})
+	if req.QuotaWarningType != dto.NotifyTypeEmail && req.QuotaWarningType != dto.NotifyTypeWebhook && req.QuotaWarningType != dto.NotifyTypeBark && req.QuotaWarningType != dto.NotifyTypeGotify {
+		common.ApiErrorI18n(c, i18n.MsgSettingInvalidType)
 		return
 	}
 
 	// 验证预警阈值
 	if req.QuotaWarningThreshold <= 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "预警阈值必须大于0",
-		})
+		common.ApiErrorI18n(c, i18n.MsgQuotaThresholdGtZero)
 		return
 	}
 
-	// 验证IP日志设置 (布尔值无需额外验证，但可以添加业务逻辑检查)
-	// ShowIPInLogs 是布尔类型，Go会自动处理true/false值
-
 	// 如果是webhook类型,验证webhook地址
-	if req.QuotaWarningType == constant.NotifyTypeWebhook {
+	if req.QuotaWarningType == dto.NotifyTypeWebhook {
 		if req.WebhookUrl == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "Webhook地址不能为空",
-			})
+			common.ApiErrorI18n(c, i18n.MsgSettingWebhookEmpty)
 			return
 		}
 		// 验证URL格式
 		if _, err := url.ParseRequestURI(req.WebhookUrl); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无效的Webhook地址",
-			})
+			common.ApiErrorI18n(c, i18n.MsgSettingWebhookInvalid)
 			return
 		}
 	}
 
-	// 如果提供了通知邮箱，添加到设置中
-	if req.QuotaWarningType == constant.NotifyTypeEmail && req.NotificationEmail != "" {
+	// 如果是邮件类型，验证邮箱地址
+	if req.QuotaWarningType == dto.NotifyTypeEmail && req.NotificationEmail != "" {
 		// 验证邮箱格式
 		if !strings.Contains(req.NotificationEmail, "@") {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无效的邮箱地址",
-			})
+			common.ApiErrorI18n(c, i18n.MsgSettingEmailInvalid)
+			return
+		}
+	}
+
+	// 如果是Bark类型，验证Bark URL
+	if req.QuotaWarningType == dto.NotifyTypeBark {
+		if req.BarkUrl == "" {
+			common.ApiErrorI18n(c, i18n.MsgSettingBarkUrlEmpty)
+			return
+		}
+		// 验证URL格式
+		if _, err := url.ParseRequestURI(req.BarkUrl); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgSettingBarkUrlInvalid)
+			return
+		}
+		// 检查是否是HTTP或HTTPS
+		if !strings.HasPrefix(req.BarkUrl, "https://") && !strings.HasPrefix(req.BarkUrl, "http://") {
+			common.ApiErrorI18n(c, i18n.MsgSettingUrlMustHttp)
+			return
+		}
+	}
+
+	// 如果是Gotify类型，验证Gotify URL和Token
+	if req.QuotaWarningType == dto.NotifyTypeGotify {
+		if req.GotifyUrl == "" {
+			common.ApiErrorI18n(c, i18n.MsgSettingGotifyUrlEmpty)
+			return
+		}
+		if req.GotifyToken == "" {
+			common.ApiErrorI18n(c, i18n.MsgSettingGotifyTokenEmpty)
+			return
+		}
+		// 验证URL格式
+		if _, err := url.ParseRequestURI(req.GotifyUrl); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgSettingGotifyUrlInvalid)
+			return
+		}
+		// 检查是否是HTTP或HTTPS
+		if !strings.HasPrefix(req.GotifyUrl, "https://") && !strings.HasPrefix(req.GotifyUrl, "http://") {
+			common.ApiErrorI18n(c, i18n.MsgSettingUrlMustHttp)
 			return
 		}
 	}
@@ -1143,198 +1130,60 @@ func UpdateUserSetting(c *gin.Context) {
 	userId := c.GetInt("id")
 	user, err := model.GetUserById(userId, true)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.ApiError(c, err)
 		return
+	}
+	existingSettings := user.GetSetting()
+	upstreamModelUpdateNotifyEnabled := existingSettings.UpstreamModelUpdateNotifyEnabled
+	if user.Role >= common.RoleAdminUser && req.UpstreamModelUpdateNotifyEnabled != nil {
+		upstreamModelUpdateNotifyEnabled = *req.UpstreamModelUpdateNotifyEnabled
 	}
 
 	// 构建设置
-	settings := map[string]interface{}{
-		constant.UserSettingNotifyType:            req.QuotaWarningType,
-		constant.UserSettingQuotaWarningThreshold: req.QuotaWarningThreshold,
-		constant.UserAcceptUnsetRatioModel:        req.AcceptUnsetModelRatioModel,
-		constant.UserSettingShowIPInLogs:          req.ShowIPInLogs,
+	settings := dto.UserSetting{
+		NotifyType:                       req.QuotaWarningType,
+		QuotaWarningThreshold:            req.QuotaWarningThreshold,
+		UpstreamModelUpdateNotifyEnabled: upstreamModelUpdateNotifyEnabled,
+		AcceptUnsetRatioModel:            req.AcceptUnsetModelRatioModel,
+		RecordIpLog:                      req.RecordIpLog,
 	}
 
 	// 如果是webhook类型,添加webhook相关设置
-	if req.QuotaWarningType == constant.NotifyTypeWebhook {
-		settings[constant.UserSettingWebhookUrl] = req.WebhookUrl
+	if req.QuotaWarningType == dto.NotifyTypeWebhook {
+		settings.WebhookUrl = req.WebhookUrl
 		if req.WebhookSecret != "" {
-			settings[constant.UserSettingWebhookSecret] = req.WebhookSecret
+			settings.WebhookSecret = req.WebhookSecret
 		}
 	}
 
 	// 如果提供了通知邮箱，添加到设置中
-	if req.QuotaWarningType == constant.NotifyTypeEmail && req.NotificationEmail != "" {
-		settings[constant.UserSettingNotificationEmail] = req.NotificationEmail
+	if req.QuotaWarningType == dto.NotifyTypeEmail && req.NotificationEmail != "" {
+		settings.NotificationEmail = req.NotificationEmail
+	}
+
+	// 如果是Bark类型，添加Bark URL到设置中
+	if req.QuotaWarningType == dto.NotifyTypeBark {
+		settings.BarkUrl = req.BarkUrl
+	}
+
+	// 如果是Gotify类型，添加Gotify配置到设置中
+	if req.QuotaWarningType == dto.NotifyTypeGotify {
+		settings.GotifyUrl = req.GotifyUrl
+		settings.GotifyToken = req.GotifyToken
+		// Gotify优先级范围0-10，超出范围则使用默认值5
+		if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
+			settings.GotifyPriority = 5
+		} else {
+			settings.GotifyPriority = req.GotifyPriority
+		}
 	}
 
 	// 更新用户设置
 	user.SetSetting(settings)
 	if err := user.Update(false); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "更新设置失败: " + err.Error(),
-		})
+		common.ApiErrorI18n(c, i18n.MsgUpdateFailed)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "设置已更新",
-	})
-}
-
-// CheckInStatus returns whether a user can check in today
-func CheckInStatus(c *gin.Context) {
-	id := c.GetInt("id")
-	user, err := model.GetUserById(id, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data": gin.H{
-			"can_check_in": user.CanCheckInToday(),
-		},
-	})
-}
-
-// CheckIn performs a daily check-in for the user
-func CheckIn(c *gin.Context) {
-	// Get check-in settings and validate them
-	checkInQuota, checkInMaxQuota, err := getAndValidateCheckInSettings()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	// Validate turnstile if enabled
-	if common.TurnstileCheckEnabled {
-		session := sessions.Default(c)
-		turnstileChecked := session.Get("turnstile")
-		if turnstileChecked == nil {
-			response := c.Query("turnstile")
-			if response == "" {
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": "Turnstile token 为空",
-				})
-				return
-			}
-
-			rawRes, err := http.PostForm("https://challenges.cloudflare.com/turnstile/v0/siteverify", url.Values{
-				"secret":   {common.TurnstileSecretKey},
-				"response": {response},
-				"remoteip": {c.ClientIP()},
-			})
-			if err != nil {
-				common.SysError(err.Error())
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": err.Error(),
-				})
-				return
-			}
-			defer rawRes.Body.Close()
-
-			var res struct {
-				Success bool `json:"success"`
-			}
-			err = json.NewDecoder(rawRes.Body).Decode(&res)
-			if err != nil {
-				common.SysError(err.Error())
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": err.Error(),
-				})
-				return
-			}
-
-			if !res.Success {
-				c.JSON(http.StatusOK, gin.H{
-					"success": false,
-					"message": "Turnstile 校验失败，请刷新重试！",
-				})
-				return
-			}
-
-			session.Set("turnstile", true)
-			err = session.Save()
-			if err != nil {
-				c.JSON(http.StatusOK, gin.H{
-					"message": "无法保存会话信息，请重试",
-					"success": false,
-				})
-				return
-			}
-		}
-	}
-
-	// Get user and perform check-in
-	id := c.GetInt("id")
-	user, err := model.GetUserById(id, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	reward, err := user.CheckIn(checkInQuota, checkInMaxQuota)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "签到成功",
-		"data": gin.H{
-			"quota": reward,
-		},
-	})
-}
-
-// getAndValidateCheckInSettings retrieves and validates check-in settings
-func getAndValidateCheckInSettings() (checkInQuota, checkInMaxQuota int, err error) {
-	common.OptionMapRWMutex.RLock()
-	checkInEnabled := common.OptionMap["CheckInEnabled"] == "true"
-	checkInQuotaStr := common.OptionMap["CheckInQuota"]
-	checkInMaxQuotaStr := common.OptionMap["CheckInMaxQuota"]
-	common.OptionMapRWMutex.RUnlock()
-
-	if !checkInEnabled {
-		return 0, 0, errors.New("签到功能未启用")
-	}
-
-	checkInQuota, err = strconv.Atoi(checkInQuotaStr)
-	if err != nil || checkInQuota <= 0 {
-		return 0, 0, errors.New("签到额度配置错误")
-	}
-
-	checkInMaxQuota = checkInQuota
-	if checkInMaxQuotaStr != "" {
-		maxQuota, err := strconv.Atoi(checkInMaxQuotaStr)
-		if err == nil && maxQuota > checkInQuota {
-			checkInMaxQuota = maxQuota
-		}
-	}
-
-	return checkInQuota, checkInMaxQuota, nil
+	common.ApiSuccessI18n(c, i18n.MsgSettingSaved, nil)
 }

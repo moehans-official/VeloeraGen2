@@ -1,27 +1,15 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package channel
 
 import (
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
-	"veloera/dto"
-	relaycommon "veloera/relay/common"
+
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/gin-gonic/gin"
 )
 
 type Adaptor interface {
@@ -36,27 +24,60 @@ type Adaptor interface {
 	ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error)
 	ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error)
 	DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error)
-	DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *dto.OpenAIErrorWithStatusCode)
+	DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError)
 	GetModelList() []string
 	GetChannelName() string
 	ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error)
+	ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.GeminiChatRequest) (any, error)
 }
 
 type TaskAdaptor interface {
-	Init(info *relaycommon.TaskRelayInfo)
+	Init(info *relaycommon.RelayInfo)
 
-	ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.TaskRelayInfo) *dto.TaskError
+	ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskError
 
-	BuildRequestURL(info *relaycommon.TaskRelayInfo) (string, error)
-	BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.TaskRelayInfo) error
-	BuildRequestBody(c *gin.Context, info *relaycommon.TaskRelayInfo) (io.Reader, error)
+	// ── Billing ──────────────────────────────────────────────────────
 
-	DoRequest(c *gin.Context, info *relaycommon.TaskRelayInfo, requestBody io.Reader) (*http.Response, error)
-	DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.TaskRelayInfo) (taskID string, taskData []byte, err *dto.TaskError)
+	// EstimateBilling returns OtherRatios for pre-charge based on user request.
+	// Called after ValidateRequestAndSetAction, before price calculation.
+	// Adaptors should extract duration, resolution, etc. from the parsed request
+	// and return them as ratio multipliers (e.g. {"seconds": 5, "size": 1.666}).
+	// Return nil to use the base model price without extra ratios.
+	EstimateBilling(c *gin.Context, info *relaycommon.RelayInfo) map[string]float64
+
+	// AdjustBillingOnSubmit returns adjusted OtherRatios from the upstream
+	// submit response. Called after a successful DoResponse.
+	// If the upstream returned actual parameters that differ from the estimate
+	// (e.g. actual seconds), return updated ratios so the caller can recalculate
+	// the quota and settle the delta with the pre-charge.
+	// Return nil if no adjustment is needed.
+	AdjustBillingOnSubmit(info *relaycommon.RelayInfo, taskData []byte) map[string]float64
+
+	// AdjustBillingOnComplete returns the actual quota when a task reaches a
+	// terminal state (success/failure) during polling.
+	// Called by the polling loop after ParseTaskResult.
+	// Return a positive value to trigger delta settlement (supplement / refund).
+	// Return 0 to keep the pre-charged amount unchanged.
+	AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int
+
+	// ── Request / Response ───────────────────────────────────────────
+
+	BuildRequestURL(info *relaycommon.RelayInfo) (string, error)
+	BuildRequestHeader(c *gin.Context, req *http.Request, info *relaycommon.RelayInfo) error
+	BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error)
+
+	DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error)
+	DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, err *dto.TaskError)
 
 	GetModelList() []string
 	GetChannelName() string
 
-	// FetchTask
-	FetchTask(baseUrl, key string, body map[string]any) (*http.Response, error)
+	// ── Polling ──────────────────────────────────────────────────────
+
+	FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error)
+	ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error)
+}
+
+type OpenAIVideoConverter interface {
+	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }

@@ -1,30 +1,11 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package claude
 
 var ModelList = []string{
-	"claude-instant-1.2",
-	"claude-2",
-	"claude-2.0",
-	"claude-2.1",
 	"claude-3-sonnet-20240229",
 	"claude-3-opus-20240229",
 	"claude-3-haiku-20240307",
 	"claude-3-5-haiku-20241022",
+	"claude-haiku-4-5-20251001",
 	"claude-3-5-sonnet-20240620",
 	"claude-3-5-sonnet-20241022",
 	"claude-3-7-sonnet-20250219",
@@ -33,6 +14,18 @@ var ModelList = []string{
 	"claude-sonnet-4-20250514-thinking",
 	"claude-opus-4-20250514",
 	"claude-opus-4-20250514-thinking",
+	"claude-opus-4-1-20250805",
+	"claude-opus-4-1-20250805-thinking",
+	"claude-sonnet-4-5-20250929",
+	"claude-sonnet-4-5-20250929-thinking",
+	"claude-opus-4-5-20251101",
+	"claude-opus-4-5-20251101-thinking",
+	"claude-opus-4-6",
+	"claude-opus-4-6-max",
+	"claude-opus-4-6-high",
+	"claude-opus-4-6-medium",
+	"claude-opus-4-6-low",
+	"claude-sonnet-4-6",
 }
 
 var ChannelName = "claude"

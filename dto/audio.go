@@ -1,27 +1,44 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package dto
 
+import (
+	"encoding/json"
+	"strings"
+
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/gin-gonic/gin"
+)
+
 type AudioRequest struct {
-	Model          string  `json:"model"`
-	Input          string  `json:"input"`
-	Voice          string  `json:"voice"`
-	Speed          float64 `json:"speed,omitempty"`
-	ResponseFormat string  `json:"response_format,omitempty"`
+	Model          string          `json:"model"`
+	Input          string          `json:"input"`
+	Voice          string          `json:"voice"`
+	Instructions   string          `json:"instructions,omitempty"`
+	ResponseFormat string          `json:"response_format,omitempty"`
+	Speed          *float64        `json:"speed,omitempty"`
+	StreamFormat   string          `json:"stream_format,omitempty"`
+	Metadata       json.RawMessage `json:"metadata,omitempty"`
+}
+
+func (r *AudioRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	meta := &types.TokenCountMeta{
+		CombineText: r.Input,
+		TokenType:   types.TokenTypeTextNumber,
+	}
+	if strings.Contains(r.Model, "gpt") {
+		meta.TokenType = types.TokenTypeTokenizer
+	}
+	return meta
+}
+
+func (r *AudioRequest) IsStream(c *gin.Context) bool {
+	return r.StreamFormat == "sse"
+}
+
+func (r *AudioRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		r.Model = modelName
+	}
 }
 
 type AudioResponse struct {

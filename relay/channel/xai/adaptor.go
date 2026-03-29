@@ -1,34 +1,29 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package xai
 
 import (
 	"errors"
-	"fmt"
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
 	"strings"
-	"veloera/dto"
-	"veloera/relay/channel"
-	relaycommon "veloera/relay/common"
+
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/QuantumNous/new-api/relay/constant"
+
+	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
 type Adaptor struct {
+}
+
+func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
+	//TODO implement me
+	return nil, errors.New("not implemented")
 }
 
 func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
@@ -43,15 +38,20 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
-	request.Size = ""
-	return request, nil
+	xaiRequest := ImageRequest{
+		Model:          request.Model,
+		Prompt:         request.Prompt,
+		N:              int(lo.FromPtrOr(request.N, uint(1))),
+		ResponseFormat: request.ResponseFormat,
+	}
+	return xaiRequest, nil
 }
 
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	return fmt.Sprintf("%s/v1/chat/completions", info.BaseUrl), nil
+	return relaycommon.GetFullRequestURL(info.ChannelBaseUrl, info.RequestURLPath, info.ChannelType), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
@@ -64,10 +64,19 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	if strings.HasSuffix(info.UpstreamModelName, "-search") {
+		info.UpstreamModelName = strings.TrimSuffix(info.UpstreamModelName, "-search")
+		request.Model = info.UpstreamModelName
+		toMap := request.ToMap()
+		toMap["search_parameters"] = map[string]any{
+			"mode": "on",
+		}
+		return toMap, nil
+	}
 	if strings.HasPrefix(request.Model, "grok-3-mini") {
-		if request.MaxCompletionTokens == 0 && request.MaxTokens != 0 {
+		if lo.FromPtrOr(request.MaxCompletionTokens, uint(0)) == 0 && lo.FromPtrOr(request.MaxTokens, uint(0)) != 0 {
 			request.MaxCompletionTokens = request.MaxTokens
-			request.MaxTokens = 0
+			request.MaxTokens = lo.ToPtr(uint(0))
 		}
 		if strings.HasSuffix(request.Model, "-high") {
 			request.ReasoningEffort = "high"
@@ -75,9 +84,6 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		} else if strings.HasSuffix(request.Model, "-low") {
 			request.ReasoningEffort = "low"
 			request.Model = strings.TrimSuffix(request.Model, "-low")
-		} else if strings.HasSuffix(request.Model, "-medium") {
-			request.ReasoningEffort = "medium"
-			request.Model = strings.TrimSuffix(request.Model, "-medium")
 		}
 		info.ReasoningEffort = request.ReasoningEffort
 		info.UpstreamModelName = request.Model
@@ -95,24 +101,33 @@ func (a *Adaptor) ConvertEmbeddingRequest(c *gin.Context, info *relaycommon.Rela
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
-	// TODO implement me
-	return nil, errors.New("not implemented")
+	if request.Model == "" && info != nil {
+		request.Model = info.UpstreamModelName
+	}
+	return request, nil
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 
-func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *dto.OpenAIErrorWithStatusCode) {
-	if info.IsStream {
-		err, usage = xAIStreamHandler(c, resp, info)
-	} else {
-		err, usage = xAIHandler(c, resp, info)
+func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
+	switch info.RelayMode {
+	case constant.RelayModeImagesGenerations, constant.RelayModeImagesEdits:
+		usage, err = openai.OpenaiHandlerWithUsage(c, info, resp)
+	case constant.RelayModeResponses:
+		if info.IsStream {
+			usage, err = openai.OaiResponsesStreamHandler(c, info, resp)
+		} else {
+			usage, err = openai.OaiResponsesHandler(c, info, resp)
+		}
+	default:
+		if info.IsStream {
+			usage, err = xAIStreamHandler(c, info, resp)
+		} else {
+			usage, err = xAIHandler(c, info, resp)
+		}
 	}
-	//if _, ok := usage.(*dto.Usage); ok && usage != nil {
-	//	usage.(*dto.Usage).CompletionTokens = usage.(*dto.Usage).TotalTokens - usage.(*dto.Usage).PromptTokens
-	//}
-
 	return
 }
 

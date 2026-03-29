@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package common
 
 import (
@@ -31,6 +15,10 @@ import (
 
 var RDB *redis.Client
 var RedisEnabled = true
+
+func RedisKeyCacheSeconds() int {
+	return SyncFrequency
+}
 
 // InitRedisClient This function is called after init()
 func InitRedisClient() (err error) {
@@ -108,13 +96,12 @@ func RedisDel(key string) error {
 	return RDB.Del(ctx, key).Err()
 }
 
-func RedisHDelObj(key string) error {
+func RedisDelKey(key string) error {
 	if DebugEnabled {
-		SysLog(fmt.Sprintf("Redis HDEL: key=%s", key))
+		SysLog(fmt.Sprintf("Redis DEL Key: key=%s", key))
 	}
 	ctx := context.Background()
 	return RDB.Del(ctx, key).Err()
-	// TODO: Use RedisDel.
 }
 
 func RedisHSetObj(key string, obj interface{}, expiration time.Duration) error {
@@ -158,7 +145,11 @@ func RedisHSetObj(key string, obj interface{}, expiration time.Duration) error {
 
 	txn := RDB.TxPipeline()
 	txn.HSet(ctx, key, data)
-	txn.Expire(ctx, key, expiration)
+
+	// 只有在 expiration 大于 0 时才设置过期时间
+	if expiration > 0 {
+		txn.Expire(ctx, key, expiration)
+	}
 
 	_, err := txn.Exec(ctx)
 	if err != nil {

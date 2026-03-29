@@ -1,344 +1,181 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package middleware
 
 import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
-	"veloera/common"
-	"veloera/constant"
-	"veloera/dto"
-	"veloera/model"
-	relayconstant "veloera/relay/constant"
-	"veloera/service"
-	"veloera/setting"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/model"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
 
 type ModelRequest struct {
 	Model string `json:"model"`
-}
-
-// Cache for storing channels by prefix
-var (
-	prefixChannelsMutex       sync.RWMutex
-	prefixChannelsCache       = make(map[string]map[string][]*model.Channel) // group -> prefix -> channels
-	prefixChannelsCacheExpiry = make(map[string]int64)                       // group -> expiry timestamp
-
-	// Round-robin key selection state
-	channelKeysMutex sync.Mutex
-	channelKeysIndex = make(map[int]int)    // channel_id -> current key index
-	channelKeysHash  = make(map[int]string) // channel_id -> hash of keys
-)
-
-// getPrefixChannels returns a map of prefix -> channels for a given group
-// The cache is refreshed every hour
-func getPrefixChannels(group string) map[string][]*model.Channel {
-	prefixChannelsMutex.RLock()
-	expiry, ok := prefixChannelsCacheExpiry[group]
-	prefixChannelsMutex.RUnlock()
-
-	currentTime := time.Now().Unix()
-	if !ok || expiry < currentTime {
-		// Cache expired, refresh it
-		return refreshPrefixChannelsCache(group)
-	}
-
-	prefixChannelsMutex.RLock()
-	defer prefixChannelsMutex.RUnlock()
-	prefixMap, ok := prefixChannelsCache[group]
-	if !ok {
-		return make(map[string][]*model.Channel)
-	}
-
-	return prefixMap
-}
-
-// GetPrefixChannels is the exported version of getPrefixChannels for use by other packages
-func GetPrefixChannels(group string) map[string][]*model.Channel {
-	return getPrefixChannels(group)
-}
-
-// SelectChannelByPrefix is the exported version of selectChannelByPrefix for use by other packages
-func SelectChannelByPrefix(group, prefix, originalModel string) (*model.Channel, error) {
-	return selectChannelByPrefix(group, prefix, originalModel)
-}
-
-// ResetChannelKeyIndex resets the round-robin key index for a specific channel
-// This can be called when a channel's keys are updated
-func ResetChannelKeyIndex(channelId int) {
-	channelKeysMutex.Lock()
-	defer channelKeysMutex.Unlock()
-
-	// Reset the key index and hash to force recalculation next time
-	delete(channelKeysIndex, channelId)
-	delete(channelKeysHash, channelId)
-}
-
-// RefreshPrefixChannelsCache refreshes prefix cache for one or multiple groups.
-// Groups should be a comma separated string, empty entries are ignored.
-func RefreshPrefixChannelsCache(groups string) {
-	for _, g := range strings.Split(groups, ",") {
-		g = strings.TrimSpace(g)
-		if g == "" {
-			continue
-		}
-		refreshPrefixChannelsCache(g)
-	}
-}
-
-// refreshPrefixChannelsCache refreshes the prefix channels cache for a given group
-func refreshPrefixChannelsCache(group string) map[string][]*model.Channel {
-	var channels []*model.Channel
-
-	// Get channels for this group from the database
-	db := model.DB.Model(&model.Channel{}).Where("status = ?", common.ChannelStatusEnabled)
-	if group != "" {
-		var condition string
-		groupCol := "`group`"
-		if common.UsingPostgreSQL {
-			groupCol = "\"group\""
-		}
-		if common.UsingMySQL {
-			condition = fmt.Sprintf("CONCAT(',', %s, ',') LIKE '%%,%s,%%'", groupCol, group)
-		} else {
-			// sqlite, PostgreSQL
-			condition = fmt.Sprintf("(',' || %s || ',') LIKE '%%,%s,%%'", groupCol, group)
-		}
-		db = db.Where(condition)
-	}
-
-	db.Order("priority desc").Find(&channels)
-	prefixMap := make(map[string][]*model.Channel)
-
-	// Group channels by prefix
-	for _, channel := range channels {
-		prefix := ""
-		if channel.ModelPrefix != nil {
-			prefix = *channel.ModelPrefix
-		}
-		prefixMap[prefix] = append(prefixMap[prefix], channel)
-	}
-
-	// Store in cache
-	prefixChannelsMutex.Lock()
-	prefixChannelsCache[group] = prefixMap
-	prefixChannelsCacheExpiry[group] = time.Now().Add(1 * time.Hour).Unix()
-	prefixChannelsMutex.Unlock()
-
-	return prefixMap
-}
-
-// selectChannelByPrefix selects a channel based on the model prefix
-func selectChannelByPrefix(group, prefix, originalModel string) (*model.Channel, error) {
-	prefixMap := getPrefixChannels(group)
-
-	channels, ok := prefixMap[prefix]
-	if !ok || len(channels) == 0 {
-		return nil, fmt.Errorf("no channels found for prefix %s", prefix)
-	}
-
-	// Filter channels that support the model (without prefix)
-	var compatibleChannels []*model.Channel
-	for _, channel := range channels {
-		// Check if the channel supports the model
-		for _, model := range channel.GetModels() {
-			if model == originalModel {
-				compatibleChannels = append(compatibleChannels, channel)
-				break
-			}
-		}
-	}
-
-	if len(compatibleChannels) == 0 {
-		return nil, fmt.Errorf("no channels supporting model %s found for prefix %s", originalModel, prefix)
-	}
-
-	// Select a random channel based on weight
-	totalWeight := 0
-	for _, channel := range compatibleChannels {
-		totalWeight += channel.GetWeight()
-	}
-
-	if totalWeight <= 0 {
-		// If no weight or all zero weights, select randomly
-		return compatibleChannels[common.GetRandomInt(len(compatibleChannels))], nil
-	}
-
-	// Weighted random selection
-	randWeight := common.GetRandomInt(totalWeight)
-	currentWeight := 0
-
-	for _, channel := range compatibleChannels {
-		currentWeight += channel.GetWeight()
-		if randWeight < currentWeight {
-			return channel, nil
-		}
-	}
-
-	// Fallback - should not happen unless there's a calculation error
-	return compatibleChannels[0], nil
+	Group string `json:"group,omitempty"`
 }
 
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		allowIpsMap := c.GetStringMap("allow_ips")
-		if len(allowIpsMap) != 0 {
-			clientIp := c.ClientIP()
-			if _, ok := allowIpsMap[clientIp]; !ok {
-				abortWithOpenAiMessage(c, http.StatusForbidden, "您的 IP 不在令牌允许访问的列表中")
-				return
-			}
-		}
 		var channel *model.Channel
-		channelId, ok := c.Get("specific_channel_id")
+		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
-			abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid request, "+err.Error())
+			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
-		userGroup := c.GetString(constant.ContextKeyUserGroup)
-		tokenGroup := c.GetString("token_group")
-		if tokenGroup != "" {
-			// check common.UserUsableGroups[userGroup]
-			if _, ok := setting.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
-				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("令牌分组 %s 已被禁用", tokenGroup))
-				return
-			}
-			// check group in common.GroupRatio
-			if !setting.ContainsGroupRatio(tokenGroup) {
-				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", tokenGroup))
-				return
-			}
-			userGroup = tokenGroup
-		}
-		c.Set("group", userGroup)
-
-		// Check if the model has a prefix, which is used for routing
-		originalModel := modelRequest.Model
-		prefixedModel, hasPrefixedModel := c.Get("prefixed_model")
-		modelPrefix := ""
-		prefixedModelStr := ""
-		if hasPrefixedModel {
-			prefixedModelStr = prefixedModel.(string)
-			// Extract prefix from the model name if it exists
-			for prefix := range getPrefixChannels(userGroup) {
-				if prefix != "" && strings.HasPrefix(prefixedModelStr, prefix) {
-					modelPrefix = prefix
-					// Update the model name to strip the prefix for channel selection
-					modelRequest.Model = strings.TrimPrefix(prefixedModelStr, prefix)
-					break
-				}
-			}
-		}
-
-		// Apply global virtual model mapping
-		originalVirtualModel := modelRequest.Model
-		actualModel, err := service.GetActualModel(modelRequest.Model)
-		if err != nil {
-			common.LogError(c, fmt.Sprintf("Failed to get actual model for %s: %s", modelRequest.Model, err.Error()))
-			abortWithOpenAiMessage(c, http.StatusInternalServerError, "Virtual model mapping error")
-			return
-		}
-		if actualModel != modelRequest.Model {
-			// Virtual model mapping was applied
-			common.SysLog(fmt.Sprintf("Model Mapping: Virtual Model=%s -> Actual model=%s", modelRequest.Model, actualModel))
-			modelRequest.Model = actualModel
-			// Set context values for logging
-			c.Set("virtual_model_mapped", true)
-			c.Set("virtual_model_original", originalVirtualModel)
-			c.Set("virtual_model_actual", actualModel)
-		}
-
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, "无效的渠道 Id")
+				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
 			channel, err = model.GetChannelById(id, true)
 			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, "无效的渠道 Id")
+				abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidChannelId))
 				return
 			}
 			if channel.Status != common.ChannelStatusEnabled {
-				abortWithOpenAiMessage(c, http.StatusForbidden, "该渠道已被禁用")
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
 		} else {
 			// Select a channel for the user
 			// check token model mapping
-			modelLimitEnable := c.GetBool("token_model_limit_enabled")
+			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
 			if modelLimitEnable {
-				s, ok := c.Get("token_model_limit")
+				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
+				if !ok {
+					// token model limit is empty, all models are not allowed
+					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenNoModelAccess))
+					return
+				}
 				var tokenModelLimit map[string]bool
-				if ok {
-					tokenModelLimit = s.(map[string]bool)
-				} else {
+				tokenModelLimit, ok = s.(map[string]bool)
+				if !ok {
 					tokenModelLimit = map[string]bool{}
 				}
-				if tokenModelLimit != nil {
-					// Check access against the original (prefixed) model name
-					if _, ok := tokenModelLimit[originalModel]; !ok {
-						abortWithOpenAiMessage(c, http.StatusForbidden, "该令牌无权访问模型 "+originalModel)
-						return
-					}
-				} else {
-					// token model limit is empty, all models are not allowed
-					abortWithOpenAiMessage(c, http.StatusForbidden, "该令牌无权访问任何模型")
+				matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // match gpts & thinking-*
+				if _, ok := tokenModelLimit[matchName]; !ok {
+					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
 					return
 				}
 			}
 
 			if shouldSelectChannel {
-				// If we have a model prefix, use it to select among specific channels
-				if modelPrefix != "" {
-					channel, err = selectChannelByPrefix(userGroup, modelPrefix, modelRequest.Model)
-				} else {
-					channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0)
+				if modelRequest.Model == "" {
+					abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorModelNameRequired))
+					return
+				}
+				var selectGroup string
+				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+				// check path is /pg/chat/completions
+				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
+					playgroundRequest := &dto.PlayGroundRequest{}
+					err = common.UnmarshalBodyReusable(c, playgroundRequest)
+					if err != nil {
+						abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidPlayground, map[string]any{"Error": err.Error()}))
+						return
+					}
+					if playgroundRequest.Group != "" {
+						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
+							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+							return
+						}
+						usingGroup = playgroundRequest.Group
+						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
+					}
 				}
 
-				if err != nil {
-					message := fmt.Sprintf("当前分组 %s 下对于模型 %s 无可用渠道", userGroup, originalModel)
-					// 如果错误，但是渠道不为空，说明是数据库一致性问题
-					if channel != nil {
-						common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-						message = "数据库一致性已被破坏，请联系管理员"
+				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+					preferred, err := model.CacheGetChannel(preferredChannelID)
+					if err == nil && preferred != nil {
+						if preferred.Status != common.ChannelStatusEnabled {
+							if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
+								return
+							}
+						} else if usingGroup == "auto" {
+							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+							autoGroups := service.GetUserAutoGroup(userGroup)
+							for _, g := range autoGroups {
+								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+									selectGroup = g
+									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
+									channel = preferred
+									service.MarkChannelAffinityUsed(c, g, preferred.Id)
+									break
+								}
+							}
+						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+							channel = preferred
+							selectGroup = usingGroup
+							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+						}
 					}
-					// 如果错误，而且渠道为空，说明是没有可用渠道
-					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message)
-					return
 				}
+
 				if channel == nil {
-					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("当前分组 %s 下对于模型 %s 无可用渠道（数据库一致性已被破坏）", userGroup, originalModel))
-					return
+					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
+						Ctx:        c,
+						ModelName:  modelRequest.Model,
+						TokenGroup: usingGroup,
+						Retry:      common.GetPointer(0),
+					})
+					if err != nil {
+						showGroup := usingGroup
+						if usingGroup == "auto" {
+							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
+						}
+						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
+						// 如果错误，但是渠道不为空，说明是数据库一致性问题
+						//if channel != nil {
+						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
+						//	message = "数据库一致性已被破坏，请联系管理员"
+						//}
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
+						return
+					}
+					if channel == nil {
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						return
+					}
 				}
 			}
 		}
-		c.Set(constant.ContextKeyRequestStartTime, time.Now())
+		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		c.Next()
+		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
+			service.RecordChannelAffinity(c, channel.Id)
+		}
 	}
+}
+
+// getModelFromRequest 从请求中读取模型信息
+// 根据 Content-Type 自动处理：
+// - application/json
+// - application/x-www-form-urlencoded
+// - multipart/form-data
+func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
+	var modelRequest ModelRequest
+	err := common.UnmarshalBodyReusable(c, &modelRequest)
+	if err != nil {
+		return nil, errors.New(i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
+	}
+	return &modelRequest, nil
 }
 
 func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
@@ -356,15 +193,15 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			midjourneyRequest := dto.MidjourneyRequest{}
 			err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
 			if err != nil {
-				return nil, false, err
+				return nil, false, errors.New(i18n.T(c, i18n.MsgDistributorInvalidMidjourney, map[string]any{"Error": err.Error()}))
 			}
 			midjourneyModel, mjErr, success := service.GetMjRequestModel(relayMode, &midjourneyRequest)
 			if mjErr != nil {
-				return nil, false, fmt.Errorf(mjErr.Description)
+				return nil, false, fmt.Errorf("%s", mjErr.Description)
 			}
 			if midjourneyModel == "" {
 				if !success {
-					return nil, false, fmt.Errorf("无效的请求, 无法解析模型")
+					return nil, false, fmt.Errorf("%s", i18n.T(c, i18n.MsgDistributorInvalidParseModel))
 				} else {
 					// task fetch, task fetch by condition, notify
 					shouldSelectChannel = false
@@ -384,11 +221,61 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		}
 		c.Set("platform", string(constant.TaskPlatformSuno))
 		c.Set("relay_mode", relayMode)
-	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") {
-		err = common.UnmarshalBodyReusable(c, &modelRequest)
-	}
-	if err != nil {
-		return nil, false, errors.New("无效的请求, " + err.Error())
+	} else if strings.Contains(c.Request.URL.Path, "/v1/videos/") && strings.HasSuffix(c.Request.URL.Path, "/remix") {
+		relayMode := relayconstant.RelayModeVideoSubmit
+		c.Set("relay_mode", relayMode)
+		shouldSelectChannel = false
+	} else if strings.Contains(c.Request.URL.Path, "/v1/videos") {
+		//curl https://api.openai.com/v1/videos \
+		//  -H "Authorization: Bearer $OPENAI_API_KEY" \
+		//  -F "model=sora-2" \
+		//  -F "prompt=A calico cat playing a piano on stage"
+		//	-F input_reference="@image.jpg"
+		relayMode := relayconstant.RelayModeUnknown
+		if c.Request.Method == http.MethodPost {
+			relayMode = relayconstant.RelayModeVideoSubmit
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil {
+				modelRequest.Model = req.Model
+			}
+		} else if c.Request.Method == http.MethodGet {
+			relayMode = relayconstant.RelayModeVideoFetchByID
+			shouldSelectChannel = false
+		}
+		c.Set("relay_mode", relayMode)
+	} else if strings.Contains(c.Request.URL.Path, "/v1/video/generations") {
+		relayMode := relayconstant.RelayModeUnknown
+		if c.Request.Method == http.MethodPost {
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			modelRequest.Model = req.Model
+			relayMode = relayconstant.RelayModeVideoSubmit
+		} else if c.Request.Method == http.MethodGet {
+			relayMode = relayconstant.RelayModeVideoFetchByID
+			shouldSelectChannel = false
+		}
+		if _, ok := c.Get("relay_mode"); !ok {
+			c.Set("relay_mode", relayMode)
+		}
+	} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+		// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
+		relayMode := relayconstant.RelayModeGemini
+		modelName := extractModelNameFromGeminiPath(c.Request.URL.Path)
+		if modelName != "" {
+			modelRequest.Model = modelName
+		}
+		c.Set("relay_mode", relayMode)
+	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+		req, err := getModelFromRequest(c)
+		if err != nil {
+			return nil, false, err
+		}
+		modelRequest.Model = req.Model
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
 		//wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01
@@ -406,122 +293,143 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
 		modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "dall-e")
+	} else if strings.HasPrefix(c.Request.URL.Path, "/v1/images/edits") {
+		//modelRequest.Model = common.GetStringIfEmpty(c.PostForm("model"), "gpt-image-1")
+		contentType := c.ContentType()
+		if slices.Contains([]string{gin.MIMEPOSTForm, gin.MIMEMultipartPOSTForm}, contentType) {
+			req, err := getModelFromRequest(c)
+			if err == nil && req.Model != "" {
+				modelRequest.Model = req.Model
+			}
+		}
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/audio") {
 		relayMode := relayconstant.RelayModeAudioSpeech
 		if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/speech") {
+
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "tts-1")
 		} else if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/translations") {
-			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, c.PostForm("model"))
+			// 先尝试从请求读取
+			if req, err := getModelFromRequest(c); err == nil && req.Model != "" {
+				modelRequest.Model = req.Model
+			}
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "whisper-1")
 			relayMode = relayconstant.RelayModeAudioTranslation
 		} else if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") {
-			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, c.PostForm("model"))
+			// 先尝试从请求读取
+			if req, err := getModelFromRequest(c); err == nil && req.Model != "" {
+				modelRequest.Model = req.Model
+			}
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "whisper-1")
 			relayMode = relayconstant.RelayModeAudioTranscription
 		}
 		c.Set("relay_mode", relayMode)
 	}
-
-	if modelRequest.Model == "" {
-		pathModel := c.Param("model")
-		if pathModel != "" {
-			if idx := strings.Index(pathModel, ":"); idx >= 0 {
-				pathModel = pathModel[:idx]
-			}
-			modelRequest.Model = pathModel
+	if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
+		// playground chat completions
+		req, err := getModelFromRequest(c)
+		if err != nil {
+			return nil, false, err
 		}
+		modelRequest.Model = req.Model
+		modelRequest.Group = req.Group
+		common.SetContextKey(c, constant.ContextKeyTokenGroup, modelRequest.Group)
 	}
 
-	// Check if the model name has a prefix that needs to be used for routing
-	// We save both the original model name (with prefix) and the model name without prefix
-	if modelRequest.Model != "" {
-		c.Set("prefixed_model", modelRequest.Model) // Store the original model name for later reference
+	if strings.HasPrefix(c.Request.URL.Path, "/v1/responses/compact") && modelRequest.Model != "" {
+		modelRequest.Model = ratio_setting.WithCompactModelSuffix(modelRequest.Model)
 	}
-
 	return &modelRequest, shouldSelectChannel, nil
 }
 
-func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) {
+func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
 	c.Set("original_model", modelName) // for retry
 	if channel == nil {
-		return
+		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
-	c.Set("channel_id", channel.Id)
-	c.Set("channel_name", channel.Name)
-	c.Set("channel_type", channel.Type)
-	c.Set("channel_create_time", channel.CreatedTime)
-	c.Set("channel_setting", channel.GetSetting())
-	c.Set("param_override", channel.GetParamOverride())
-	c.Set("system_prompt", channel.GetSystemPrompt())
-
-	// Set model prefix if available
-	if channel.ModelPrefix != nil && *channel.ModelPrefix != "" {
-		c.Set("model_prefix", *channel.ModelPrefix)
+	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
+	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)
+	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
+	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
+	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
+	paramOverride := channel.GetParamOverride()
+	headerOverride := channel.GetHeaderOverride()
+	if mergedParam, applied := service.ApplyChannelAffinityOverrideTemplate(c, paramOverride); applied {
+		paramOverride = mergedParam
 	}
-
-	if nil != channel.OpenAIOrganization && "" != *channel.OpenAIOrganization {
-		c.Set("channel_organization", *channel.OpenAIOrganization)
+	common.SetContextKey(c, constant.ContextKeyChannelParamOverride, paramOverride)
+	common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, headerOverride)
+	if nil != channel.OpenAIOrganization && *channel.OpenAIOrganization != "" {
+		common.SetContextKey(c, constant.ContextKeyChannelOrganization, *channel.OpenAIOrganization)
 	}
-	c.Set("auto_ban", channel.GetAutoBan())
-	c.Set("model_mapping", channel.GetModelMapping())
-	c.Set("status_code_mapping", channel.GetStatusCodeMapping())
+	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
+	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
+	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	// 如果key包含逗号，使用轮询方式选择一个key
-	// 对于渠道类型41，不处理逗号分隔的多key机制
-	if channel.Type == 41 {
-		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
-	} else if strings.Contains(channel.Key, ",") {
-		keys := strings.Split(channel.Key, ",")
-
-		// Get current index for this channel using round-robin
-		channelKeysMutex.Lock()
-
-		// Check if keys have changed by comparing with stored hash
-		currentHash := common.GetMD5Hash(channel.Key)
-		storedHash, hashExists := channelKeysHash[channel.Id]
-
-		// Reset index if keys have changed or index doesn't exist
-		index := 0
-		if hashExists && storedHash == currentHash {
-			// Keys haven't changed, use stored index
-			storedIndex, exists := channelKeysIndex[channel.Id]
-			if exists && storedIndex < len(keys) {
-				index = storedIndex
-			}
-		} else {
-			// Keys have changed or this is first use, update hash and reset index
-			channelKeysHash[channel.Id] = currentHash
-		}
-
-		// Select key at current index
-		selectedKey := keys[index]
-
-		// Update index for next use
-		channelKeysIndex[channel.Id] = (index + 1) % len(keys)
-		channelKeysMutex.Unlock()
-
-		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", strings.TrimSpace(selectedKey)))
+	key, index, newAPIError := channel.GetNextEnabledKey()
+	if newAPIError != nil {
+		return newAPIError
+	}
+	if channel.ChannelInfo.IsMultiKey {
+		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
+		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
 	} else {
-		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+		// 必须设置为 false，否则在重试到单个 key 的时候会导致日志显示错误
+		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, false)
 	}
+	// c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
+	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
 
-	c.Set("base_url", channel.GetBaseURL())
+	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, false)
+
 	// TODO: api_version统一
 	switch channel.Type {
-	case common.ChannelTypeAzure:
+	case constant.ChannelTypeAzure:
 		c.Set("api_version", channel.Other)
-	case common.ChannelTypeVertexAi:
+	case constant.ChannelTypeVertexAi:
 		c.Set("region", channel.Other)
-	case common.ChannelTypeXunfei:
+	case constant.ChannelTypeXunfei:
 		c.Set("api_version", channel.Other)
-	case common.ChannelTypeGemini:
+	case constant.ChannelTypeGemini:
 		c.Set("api_version", channel.Other)
-	case common.ChannelTypeAli:
+	case constant.ChannelTypeAli:
 		c.Set("plugin", channel.Other)
-	case common.ChannelCloudflare:
+	case constant.ChannelCloudflare:
 		c.Set("api_version", channel.Other)
-	case common.ChannelTypeMokaAI:
+	case constant.ChannelTypeMokaAI:
 		c.Set("api_version", channel.Other)
+	case constant.ChannelTypeCoze:
+		c.Set("bot_id", channel.Other)
 	}
+	return nil
+}
+
+// extractModelNameFromGeminiPath 从 Gemini API URL 路径中提取模型名
+// 输入格式: /v1beta/models/gemini-2.0-flash:generateContent
+// 输出: gemini-2.0-flash
+func extractModelNameFromGeminiPath(path string) string {
+	// 查找 "/models/" 的位置
+	modelsPrefix := "/models/"
+	modelsIndex := strings.Index(path, modelsPrefix)
+	if modelsIndex == -1 {
+		return ""
+	}
+
+	// 从 "/models/" 之后开始提取
+	startIndex := modelsIndex + len(modelsPrefix)
+	if startIndex >= len(path) {
+		return ""
+	}
+
+	// 查找 ":" 的位置，模型名在 ":" 之前
+	colonIndex := strings.Index(path[startIndex:], ":")
+	if colonIndex == -1 {
+		// 如果没有找到 ":"，返回从 "/models/" 到路径结尾的部分
+		return path[startIndex:]
+	}
+
+	// 返回模型名部分
+	return path[startIndex : startIndex+colonIndex]
 }

@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package config
 
 import (
@@ -22,7 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"veloera/common"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // ConfigManager 统一管理所有配置
@@ -146,6 +131,18 @@ func configToMap(config interface{}) (map[string]string, error) {
 			strValue = strconv.FormatUint(field.Uint(), 10)
 		case reflect.Float32, reflect.Float64:
 			strValue = strconv.FormatFloat(field.Float(), 'f', -1, 64)
+		case reflect.Ptr:
+			// 处理指针类型：如果非 nil，序列化指向的值
+			if !field.IsNil() {
+				bytes, err := json.Marshal(field.Interface())
+				if err != nil {
+					return nil, err
+				}
+				strValue = string(bytes)
+			} else {
+				// nil 指针序列化为 "null"
+				strValue = "null"
+			}
 		case reflect.Map, reflect.Slice, reflect.Struct:
 			// 复杂类型使用JSON序列化
 			bytes, err := json.Marshal(field.Interface())
@@ -215,13 +212,23 @@ func updateConfigFromMap(config interface{}, configMap map[string]string) error 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			intValue, err := strconv.ParseInt(strValue, 10, 64)
 			if err != nil {
-				continue
+				// 兼容 float 格式的字符串（如 "2.000000"）
+				floatValue, fErr := strconv.ParseFloat(strValue, 64)
+				if fErr != nil {
+					continue
+				}
+				intValue = int64(floatValue)
 			}
 			field.SetInt(intValue)
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 			uintValue, err := strconv.ParseUint(strValue, 10, 64)
 			if err != nil {
-				continue
+				// 兼容 float 格式的字符串
+				floatValue, fErr := strconv.ParseFloat(strValue, 64)
+				if fErr != nil || floatValue < 0 {
+					continue
+				}
+				uintValue = uint64(floatValue)
 			}
 			field.SetUint(uintValue)
 		case reflect.Float32, reflect.Float64:
@@ -230,6 +237,21 @@ func updateConfigFromMap(config interface{}, configMap map[string]string) error 
 				continue
 			}
 			field.SetFloat(floatValue)
+		case reflect.Ptr:
+			// 处理指针类型
+			if strValue == "null" {
+				field.Set(reflect.Zero(field.Type()))
+			} else {
+				// 如果指针是 nil，需要先初始化
+				if field.IsNil() {
+					field.Set(reflect.New(field.Type().Elem()))
+				}
+				// 反序列化到指针指向的值
+				err := json.Unmarshal([]byte(strValue), field.Interface())
+				if err != nil {
+					continue
+				}
+			}
 		case reflect.Map, reflect.Slice, reflect.Struct:
 			// 复杂类型使用JSON反序列化
 			err := json.Unmarshal([]byte(strValue), field.Addr().Interface())

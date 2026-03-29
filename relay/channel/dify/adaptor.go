@@ -1,30 +1,17 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package dify
 
 import (
 	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
-	"veloera/dto"
-	"veloera/relay/channel"
-	relaycommon "veloera/relay/common"
+
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/relay/channel"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -36,6 +23,11 @@ const (
 
 type Adaptor struct {
 	BotType int
+}
+
+func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dto.GeminiChatRequest) (any, error) {
+	//TODO implement me
+	return nil, errors.New("not implemented")
 }
 
 func (a *Adaptor) ConvertClaudeRequest(*gin.Context, *relaycommon.RelayInfo, *dto.ClaudeRequest) (any, error) {
@@ -70,13 +62,13 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	switch a.BotType {
 	case BotTypeWorkFlow:
-		return fmt.Sprintf("%s/v1/workflows/run", info.BaseUrl), nil
+		return fmt.Sprintf("%s/v1/workflows/run", info.ChannelBaseUrl), nil
 	case BotTypeCompletion:
-		return fmt.Sprintf("%s/v1/completion-messages", info.BaseUrl), nil
+		return fmt.Sprintf("%s/v1/completion-messages", info.ChannelBaseUrl), nil
 	case BotTypeAgent:
 		fallthrough
 	default:
-		return fmt.Sprintf("%s/v1/chat-messages", info.BaseUrl), nil
+		return fmt.Sprintf("%s/v1/chat-messages", info.ChannelBaseUrl), nil
 	}
 }
 
@@ -111,11 +103,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 
-func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *dto.OpenAIErrorWithStatusCode) {
+func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
 	if info.IsStream {
-		err, usage = difyStreamHandler(c, resp, info)
+		return difyStreamHandler(c, info, resp)
 	} else {
-		err, usage = difyHandler(c, resp, info)
+		return difyHandler(c, info, resp)
 	}
 	return
 }

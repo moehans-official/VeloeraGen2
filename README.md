@@ -1,13 +1,13 @@
 ﻿<div align="center">
-  <img src="https://cloudflareimg.cdn.sn/i/695929a70c0bc_1767451047.webp" alt="Veloera CE Logo" width="180" />
+  <img src="https://cloudflareimg.cdn.sn/i/695929a70c0bc_1767451047.webp" alt="Veloera Gen2 Logo" width="180" />
   <h1>Veloera Gen2</h1>
   <p>Veloera Gen2，面向生产可用</p>
   <p>
     简体中文 | <a href="./README_EN.md">English</a>
   </p>
   <p>
-    <a href="./LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/License-GPLv3-orange.svg" /></a>
-    <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go" />
+    <a href="./LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/License-AGPLv3-blue.svg" /></a>
+    <img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go" />
     <img alt="Node" src="https://img.shields.io/badge/Node-20+-339933?logo=node.js" />
     <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker" />
   </p>
@@ -52,17 +52,18 @@ git clone https://github.com/moehans-official/VeloeraGen2.git
 cd VeloeraGen2
 ```
 
-2. 准备环境变量
+2. 修改 `docker-compose.yml`（生产环境务必修改默认密码/连接串）
+
+3. 启动服务
 
 ```bash
-cp .env.example .env
+docker compose up -d
 ```
 
-3. 检查状态
+4. 检查状态
 
 ```bash
-curl http://localhost:3000/api/healthz
-curl http://localhost:3000/api/readyz
+curl http://localhost:3000/api/status
 ```
 
 默认访问地址：`http://localhost:3000`
@@ -73,8 +74,8 @@ curl http://localhost:3000/api/readyz
 
 ```bash
 cd web
-pnpm install
-pnpm run build
+bun install
+bun run build
 cd ..
 ```
 
@@ -88,25 +89,22 @@ go run main.go
 
 ```bash
 cd web
-pnpm run dev
+bun run dev
 ```
 
 ## 运维与健康检查
 
-- 存活探针：`GET /api/healthz`
-- 就绪探针：`GET /api/readyz`（检查 DB/Redis）
+- 健康状态：`GET /api/status`
 
-可选硬化环境变量（节选）：
+常用环境变量（节选，详见 `.env.example`）：
 
-- `TRUSTED_PROXIES`
-- `SERVER_READ_TIMEOUT`
-- `SERVER_WRITE_TIMEOUT`
-- `SERVER_IDLE_TIMEOUT`
-- `SERVER_SHUTDOWN_TIMEOUT`
-- `SECURITY_HSTS_MAX_AGE`
-- `SECURITY_HSTS_FORCE`
-- `SECURITY_CONTENT_SECURITY_POLICY`
+- `SQL_DSN` / `LOG_SQL_DSN` / `SQLITE_PATH`
+- `REDIS_CONN_STRING`
+- `SESSION_SECRET`（生产环境必须自定义）
+- `SYNC_FREQUENCY`
+- `RELAY_TIMEOUT` / `STREAMING_TIMEOUT`
+- `TLS_INSECURE_SKIP_VERIFY`
 
 ## License
 
-本项目采用 [`GNU GPLv3`](./LICENSE) 许可证。
+本项目采用 [`GNU AGPLv3`](./LICENSE) 许可证。

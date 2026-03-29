@@ -1,35 +1,17 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package common
 
 import (
-	"bytes"
-	"context"
 	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/pkg/errors"
 	"html/template"
 	"io"
 	"log"
 	"math/big"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -37,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 )
 
 func OpenBrowser(url string) {
@@ -82,6 +64,78 @@ func GetIp() (ip string) {
 		}
 	}
 	return
+}
+
+func GetNetworkIps() []string {
+	var networkIps []string
+	ips, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Println(err)
+		return networkIps
+	}
+
+	for _, a := range ips {
+		if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				ip := ipNet.IP.String()
+				// Include common private network ranges
+				if strings.HasPrefix(ip, "10.") ||
+					strings.HasPrefix(ip, "172.") ||
+					strings.HasPrefix(ip, "192.168.") {
+					networkIps = append(networkIps, ip)
+				}
+			}
+		}
+	}
+	return networkIps
+}
+
+// IsRunningInContainer detects if the application is running inside a container
+func IsRunningInContainer() bool {
+	// Method 1: Check for .dockerenv file (Docker containers)
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	// Method 2: Check cgroup for container indicators
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		content := string(data)
+		if strings.Contains(content, "docker") ||
+			strings.Contains(content, "containerd") ||
+			strings.Contains(content, "kubepods") ||
+			strings.Contains(content, "/lxc/") {
+			return true
+		}
+	}
+
+	// Method 3: Check environment variables commonly set by container runtimes
+	containerEnvVars := []string{
+		"KUBERNETES_SERVICE_HOST",
+		"DOCKER_CONTAINER",
+		"container",
+	}
+
+	for _, envVar := range containerEnvVars {
+		if os.Getenv(envVar) != "" {
+			return true
+		}
+	}
+
+	// Method 4: Check if init process is not the traditional init
+	if data, err := os.ReadFile("/proc/1/comm"); err == nil {
+		comm := strings.TrimSpace(string(data))
+		// In containers, process 1 is often not "init" or "systemd"
+		if comm != "init" && comm != "systemd" {
+			// Additional check: if it's a common container entrypoint
+			if strings.Contains(comm, "docker") ||
+				strings.Contains(comm, "containerd") ||
+				strings.Contains(comm, "runc") {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 var sizeKB = 1024
@@ -138,9 +192,17 @@ func Interface2String(inter interface{}) string {
 	case int:
 		return fmt.Sprintf("%d", inter.(int))
 	case float64:
-		return fmt.Sprintf("%f", inter.(float64))
+		return strconv.FormatFloat(inter.(float64), 'f', -1, 64)
+	case bool:
+		if inter.(bool) {
+			return "true"
+		} else {
+			return "false"
+		}
+	case nil:
+		return ""
 	}
-	return "Not Implemented"
+	return fmt.Sprintf("%v", inter)
 }
 
 func UnescapeHTML(x string) interface{} {
@@ -155,11 +217,6 @@ func IntMax(a int, b int) int {
 	}
 }
 
-func IsIP(s string) bool {
-	ip := net.ParseIP(s)
-	return ip != nil
-}
-
 func GetUUID() string {
 	code := uuid.New().String()
 	code = strings.Replace(code, "-", "", -1)
@@ -167,10 +224,6 @@ func GetUUID() string {
 }
 
 const keyChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-func init() {
-	rand.New(rand.NewSource(time.Now().UnixNano()))
-}
 
 func GenerateRandomCharsKey(length int) (string, error) {
 	b := make([]byte, length)
@@ -205,17 +258,12 @@ func GetRandomInt(max int) int {
 	return rand.Intn(max)
 }
 
-// RandomInt returns a random integer in the range [0, max)
-func RandomInt(max int) int {
-	return rand.Intn(max)
-}
-
 func GetTimestamp() int64 {
 	return time.Now().Unix()
 }
 
 func GetTimeString() string {
-	now := time.Now()
+	now := time.Now().UTC()
 	return fmt.Sprintf("%s%d", now.Format("20060102150405"), now.UnixNano()%1e9)
 }
 
@@ -270,134 +318,19 @@ func SaveTmpFile(filename string, data io.Reader) (string, error) {
 	return f.Name(), nil
 }
 
-// GetAudioDuration returns the duration of an audio file in seconds.
-func GetAudioDuration(ctx context.Context, filename string) (float64, error) {
-	// ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {{input}}
-	c := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename)
-	output, err := c.Output()
+// BuildURL concatenates base and endpoint, returns the complete url string
+func BuildURL(base string, endpoint string) string {
+	u, err := url.Parse(base)
 	if err != nil {
-		return 0, errors.Wrap(err, "failed to get audio duration")
+		return base + endpoint
 	}
-
-	return strconv.ParseFloat(string(bytes.TrimSpace(output)), 64)
-}
-
-// GetClientIP detects the client IP address based on reverse proxy configuration
-// This function handles different proxy configurations (Cloudflare, Nginx) and falls back to direct connection IP
-func GetClientIP(c *gin.Context) string {
-	// If reverse proxy is not enabled, use direct connection IP
-	if !ReverseProxyEnabled {
-		return c.ClientIP()
+	end := endpoint
+	if end == "" {
+		end = "/"
 	}
-
-	var ip string
-	
-	// Handle different proxy providers
-	switch ReverseProxyProvider {
-	case "cloudflare":
-		// Cloudflare uses CF-Connecting-IP header
-		ip = c.GetHeader("CF-Connecting-IP")
-		if ip != "" && IsValidIP(ip) {
-			return SanitizeIP(ip)
-		}
-	case "nginx":
-		// Nginx/OpenResty typically uses X-Real-IP header first
-		ip = c.GetHeader("X-Real-IP")
-		if ip != "" && IsValidIP(ip) {
-			return SanitizeIP(ip)
-		}
-		
-		// Fallback to X-Forwarded-For header (get first IP in chain)
-		forwardedFor := c.GetHeader("X-Forwarded-For")
-		if forwardedFor != "" {
-			// X-Forwarded-For can contain multiple IPs separated by commas
-			// The first IP is typically the original client IP
-			ips := strings.Split(forwardedFor, ",")
-			if len(ips) > 0 {
-				firstIP := strings.TrimSpace(ips[0])
-				if IsValidIP(firstIP) {
-					return SanitizeIP(firstIP)
-				}
-			}
-		}
+	ref, err := url.Parse(end)
+	if err != nil {
+		return base + endpoint
 	}
-	
-	// Fallback to connection IP if proxy headers are missing or invalid
-	return c.ClientIP()
-}
-
-// DetectProxyHeaders analyzes request headers to determine proxy configuration
-// Returns the detected provider and the IP address found
-func DetectProxyHeaders(c *gin.Context) (provider string, ip string) {
-	// Check for Cloudflare headers first
-	if cfIP := c.GetHeader("CF-Connecting-IP"); cfIP != "" && IsValidIP(cfIP) {
-		return "cloudflare", SanitizeIP(cfIP)
-	}
-	
-	// Check for Nginx/OpenResty headers
-	if realIP := c.GetHeader("X-Real-IP"); realIP != "" && IsValidIP(realIP) {
-		return "nginx", SanitizeIP(realIP)
-	}
-	
-	// Check X-Forwarded-For as secondary option for Nginx
-	if forwardedFor := c.GetHeader("X-Forwarded-For"); forwardedFor != "" {
-		ips := strings.Split(forwardedFor, ",")
-		if len(ips) > 0 {
-			firstIP := strings.TrimSpace(ips[0])
-			if IsValidIP(firstIP) {
-				return "nginx", SanitizeIP(firstIP)
-			}
-		}
-	}
-	
-	// No proxy headers detected
-	return "", ""
-}
-
-// IsValidIP validates if a string is a valid IP address (IPv4 or IPv6)
-func IsValidIP(ip string) bool {
-	if ip == "" {
-		return false
-	}
-	
-	// Remove any surrounding whitespace
-	ip = strings.TrimSpace(ip)
-	
-	// Use net.ParseIP to validate the IP address
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return false
-	}
-	
-	// Additional validation: reject obviously invalid IPs
-	// Reject localhost/loopback addresses in proxy context
-	if parsedIP.IsLoopback() {
-		return false
-	}
-	
-	// Reject unspecified addresses (0.0.0.0 or ::)
-	if parsedIP.IsUnspecified() {
-		return false
-	}
-	
-	return true
-}
-
-// SanitizeIP cleans and validates an IP address string
-func SanitizeIP(ip string) string {
-	if ip == "" {
-		return ""
-	}
-	
-	// Remove surrounding whitespace
-	ip = strings.TrimSpace(ip)
-	
-	// Parse and reformat the IP to ensure it's in standard format
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return ""
-	}
-	
-	// Return the standardized string representation
-	return parsedIP.String()
+	return u.ResolveReference(ref).String()
 }

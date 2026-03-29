@@ -1,13 +1,13 @@
 ﻿<div align="center">
-  <img src="https://cloudflareimg.cdn.sn/i/695929a70c0bc_1767451047.webp" alt="Veloera CE Logo" width="180" />
+  <img src="https://cloudflareimg.cdn.sn/i/695929a70c0bc_1767451047.webp" alt="Veloera Gen2 Logo" width="180" />
   <h1>VeloeraGen2</h1>
   <p>Community-maintained Veloera, optimized for production operations</p>
   <p>
     <a href="./README.md">简体中文</a> | English
   </p>
   <p>
-    <a href="./LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/License-GPLv3-orange.svg" /></a>
-    <img alt="Go" src="https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go" />
+    <a href="./LICENSE"><img alt="License: AGPLv3" src="https://img.shields.io/badge/License-AGPLv3-blue.svg" /></a>
+    <img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go" />
     <img alt="Node" src="https://img.shields.io/badge/Node-20+-339933?logo=node.js" />
     <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker" />
   </p>
@@ -54,31 +54,18 @@ git clone https://github.com/moehans-official/VeloeraGen2.git
 cd VeloeraGen2
 ```
 
-2. Prepare environment variables
+2. Edit `docker-compose.yml` (change default passwords/DSN for production)
 
-```bash
-cp .env.example .env
-```
-
-3. Pull prebuilt image from Docker Hub
-
-```bash
-docker pull veloerace/veloerace:latest
-```
-
-4. Ensure `veloera.image` in `docker-compose.yml` is `veloerace/veloerace:latest`
-
-5. Start services
+3. Start services
 
 ```bash
 docker compose up -d
 ```
 
-6. Verify health
+4. Verify status
 
 ```bash
-curl http://localhost:3000/api/healthz
-curl http://localhost:3000/api/readyz
+curl http://localhost:3000/api/status
 ```
 
 Default URL: `http://localhost:3000`
@@ -89,8 +76,8 @@ Default URL: `http://localhost:3000`
 
 ```bash
 cd web
-pnpm install
-pnpm run build
+bun install
+bun run build
 cd ..
 ```
 
@@ -104,25 +91,22 @@ go run main.go
 
 ```bash
 cd web
-pnpm run dev
+bun run dev
 ```
 
 ## Ops and Health Probes
 
-- Liveness: `GET /api/healthz`
-- Readiness: `GET /api/readyz` (checks DB/Redis)
+- Status: `GET /api/status`
 
-Hardening env vars (partial list):
+Common env vars (partial list, see `.env.example`):
 
-- `TRUSTED_PROXIES`
-- `SERVER_READ_TIMEOUT`
-- `SERVER_WRITE_TIMEOUT`
-- `SERVER_IDLE_TIMEOUT`
-- `SERVER_SHUTDOWN_TIMEOUT`
-- `SECURITY_HSTS_MAX_AGE`
-- `SECURITY_HSTS_FORCE`
-- `SECURITY_CONTENT_SECURITY_POLICY`
+- `SQL_DSN` / `LOG_SQL_DSN` / `SQLITE_PATH`
+- `REDIS_CONN_STRING`
+- `SESSION_SECRET` (must be customized in production)
+- `SYNC_FREQUENCY`
+- `RELAY_TIMEOUT` / `STREAMING_TIMEOUT`
+- `TLS_INSECURE_SKIP_VERIFY`
 
 ## License
 
-Licensed under [`GNU GPLv3`](./LICENSE).
+Licensed under [`GNU AGPLv3`](./LICENSE).

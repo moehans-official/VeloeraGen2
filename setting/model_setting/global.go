@@ -1,54 +1,54 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package model_setting
 
 import (
-	"strconv"
+	"slices"
 	"strings"
-	"veloera/setting/config"
+
+	"github.com/QuantumNous/new-api/setting/config"
 )
 
+type ChatCompletionsToResponsesPolicy struct {
+	Enabled       bool     `json:"enabled"`
+	AllChannels   bool     `json:"all_channels"`
+	ChannelIDs    []int    `json:"channel_ids,omitempty"`
+	ChannelTypes  []int    `json:"channel_types,omitempty"`
+	ModelPatterns []string `json:"model_patterns,omitempty"`
+}
+
+func (p ChatCompletionsToResponsesPolicy) IsChannelEnabled(channelID int, channelType int) bool {
+	if !p.Enabled {
+		return false
+	}
+	if p.AllChannels {
+		return true
+	}
+
+	if channelID > 0 && len(p.ChannelIDs) > 0 && slices.Contains(p.ChannelIDs, channelID) {
+		return true
+	}
+	if channelType > 0 && len(p.ChannelTypes) > 0 && slices.Contains(p.ChannelTypes, channelType) {
+		return true
+	}
+	return false
+}
+
 type GlobalSettings struct {
-	PassThroughRequestEnabled    bool   `json:"pass_through_request_enabled"`
-	HideUpstreamErrorEnabled     bool   `json:"hide_upstream_error_enabled"`
-	BlockBrowserExtensionEnabled bool   `json:"block_browser_extension_enabled"`
-	RateLimitExemptEnabled       bool   `json:"rate_limit_exempt_enabled"`
-	RateLimitExemptGroup         string `json:"rate_limit_exempt_group"`
-	SafeCheckExemptEnabled       bool   `json:"safe_check_exempt_enabled"`
-	SafeCheckExemptGroup         string `json:"safe_check_exempt_group"`
-	AutoRetryEnabled             bool   `json:"auto_retry_enabled"`
-	AutoRetryCount               int    `json:"auto_retry_count"`
-	AutoRetryForceChannelSwitch  bool   `json:"auto_retry_force_channel_switch"`
-	AutoRetryStatusCodes         string `json:"auto_retry_status_codes"`
+	PassThroughRequestEnabled        bool                             `json:"pass_through_request_enabled"`
+	ThinkingModelBlacklist           []string                         `json:"thinking_model_blacklist"`
+	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
 }
 
 // 默认配置
 var defaultOpenaiSettings = GlobalSettings{
-	PassThroughRequestEnabled:    false,
-	HideUpstreamErrorEnabled:     false,
-	BlockBrowserExtensionEnabled: false,
-	RateLimitExemptEnabled:       false,
-	RateLimitExemptGroup:         "bulk-ok",
-	SafeCheckExemptEnabled:       false,
-	SafeCheckExemptGroup:         "nsfw-ok",
-	AutoRetryEnabled:             false,
-	AutoRetryCount:               3,
-	AutoRetryForceChannelSwitch:  false,
-	AutoRetryStatusCodes:         "5xx,4xx",
+	PassThroughRequestEnabled: false,
+	ThinkingModelBlacklist: []string{
+		"moonshotai/kimi-k2-thinking",
+		"kimi-k2-thinking",
+	},
+	ChatCompletionsToResponsesPolicy: ChatCompletionsToResponsesPolicy{
+		Enabled:     false,
+		AllChannels: true,
+	},
 }
 
 // 全局实例
@@ -63,61 +63,17 @@ func GetGlobalSettings() *GlobalSettings {
 	return &globalSettings
 }
 
-func ShouldBypassRateLimit(group string) bool {
-	return globalSettings.RateLimitExemptEnabled && group == globalSettings.RateLimitExemptGroup
-}
-
-func ShouldBypassSafeCheck(group string) bool {
-	return globalSettings.SafeCheckExemptEnabled && group == globalSettings.SafeCheckExemptGroup
-}
-
-// GetAutoRetryCount 获取自动重试次数
-func GetAutoRetryCount() int {
-	if !globalSettings.AutoRetryEnabled {
-		return 0
-	}
-	return globalSettings.AutoRetryCount
-}
-
-// ShouldForceChannelSwitch 是否强制切换渠道
-func ShouldForceChannelSwitch() bool {
-	return globalSettings.AutoRetryEnabled && globalSettings.AutoRetryForceChannelSwitch
-}
-
-// ShouldRetryForStatusCode 检查状态码是否应该重试
-func ShouldRetryForStatusCode(statusCode int) bool {
-	if !globalSettings.AutoRetryEnabled {
+// ShouldPreserveThinkingSuffix 判断模型是否配置为保留 thinking/-nothinking/-low/-high/-medium 后缀
+func ShouldPreserveThinkingSuffix(modelName string) bool {
+	target := strings.TrimSpace(modelName)
+	if target == "" {
 		return false
 	}
 
-	if globalSettings.AutoRetryStatusCodes == "" {
-		return true // 默认所有状态码都重试
-	}
-
-	codes := strings.Split(globalSettings.AutoRetryStatusCodes, ",")
-	for _, code := range codes {
-		code = strings.TrimSpace(code)
-		if code == "" {
-			continue
-		}
-
-		// 处理 5xx, 4xx 这样的通配符
-		if strings.HasSuffix(code, "xx") {
-			prefix := strings.TrimSuffix(code, "xx")
-			if prefixNum, err := strconv.Atoi(prefix); err == nil {
-				if statusCode/100 == prefixNum {
-					return true
-				}
-			}
-		} else {
-			// 处理具体的状态码
-			if codeNum, err := strconv.Atoi(code); err == nil {
-				if statusCode == codeNum {
-					return true
-				}
-			}
+	for _, entry := range globalSettings.ThinkingModelBlacklist {
+		if strings.TrimSpace(entry) == target {
+			return true
 		}
 	}
-
 	return false
 }

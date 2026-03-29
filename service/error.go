@@ -1,31 +1,20 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
-	"veloera/common"
-	"veloera/dto"
-	"veloera/setting/model_setting"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/types"
 )
 
 func MidjourneyErrorWrapper(code int, desc string) *dto.MidjourneyResponse {
@@ -42,41 +31,45 @@ func MidjourneyErrorWithStatusCodeWrapper(code int, desc string, statusCode int)
 	}
 }
 
-// OpenAIErrorWrapper wraps an error into an OpenAIErrorWithStatusCode
-func OpenAIErrorWrapper(err error, code string, statusCode int) *dto.OpenAIErrorWithStatusCode {
-	text := err.Error()
-	lowerText := strings.ToLower(text)
-	if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
-		common.SysLog(fmt.Sprintf("error: %s", text))
-		text = "请求上游地址失败"
-	}
-	openAIError := dto.OpenAIError{
-		Message: text,
-		Type:    "veloera_error",
-		Code:    code,
-	}
-	return &dto.OpenAIErrorWithStatusCode{
-		Error:      openAIError,
-		StatusCode: statusCode,
-	}
-}
-
-func OpenAIErrorWrapperLocal(err error, code string, statusCode int) *dto.OpenAIErrorWithStatusCode {
-	openaiErr := OpenAIErrorWrapper(err, code, statusCode)
-	openaiErr.LocalError = true
-	return openaiErr
-}
+//// OpenAIErrorWrapper wraps an error into an OpenAIErrorWithStatusCode
+//func OpenAIErrorWrapper(err error, code string, statusCode int) *dto.OpenAIErrorWithStatusCode {
+//	text := err.Error()
+//	lowerText := strings.ToLower(text)
+//	if !strings.HasPrefix(lowerText, "get file base64 from url") && !strings.HasPrefix(lowerText, "mime type is not supported") {
+//		if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
+//			common.SysLog(fmt.Sprintf("error: %s", text))
+//			text = "请求上游地址失败"
+//		}
+//	}
+//	openAIError := dto.OpenAIError{
+//		Message: text,
+//		Type:    "new_api_error",
+//		Code:    code,
+//	}
+//	return &dto.OpenAIErrorWithStatusCode{
+//		Error:      openAIError,
+//		StatusCode: statusCode,
+//	}
+//}
+//
+//func OpenAIErrorWrapperLocal(err error, code string, statusCode int) *dto.OpenAIErrorWithStatusCode {
+//	openaiErr := OpenAIErrorWrapper(err, code, statusCode)
+//	openaiErr.LocalError = true
+//	return openaiErr
+//}
 
 func ClaudeErrorWrapper(err error, code string, statusCode int) *dto.ClaudeErrorWithStatusCode {
 	text := err.Error()
 	lowerText := strings.ToLower(text)
-	if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
-		common.SysLog(fmt.Sprintf("error: %s", text))
-		text = "请求上游地址失败"
+	if !strings.HasPrefix(lowerText, "get file base64 from url") {
+		if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
+			common.SysLog(fmt.Sprintf("error: %s", text))
+			text = "请求上游地址失败"
+		}
 	}
-	claudeError := dto.ClaudeError{
+	claudeError := types.ClaudeError{
 		Message: text,
-		Type:    "veloera_error",
+		Type:    "new_api_error",
 	}
 	return &dto.ClaudeErrorWithStatusCode{
 		Error:      claudeError,
@@ -90,68 +83,102 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 	return claudeErr
 }
 
-func RelayErrorHandler(resp *http.Response, showBodyWhenFail bool) (errWithStatusCode *dto.OpenAIErrorWithStatusCode) {
-	hideUpstream := model_setting.GetGlobalSettings().HideUpstreamErrorEnabled
-	errWithStatusCode = &dto.OpenAIErrorWithStatusCode{
-		StatusCode: resp.StatusCode,
-		Error: dto.OpenAIError{
-			Type:  "upstream_error",
-			Code:  "bad_response_status_code",
-			Param: strconv.Itoa(resp.StatusCode),
-		},
-	}
+func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
+	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return
 	}
-	err = resp.Body.Close()
-	if err != nil {
-		return
-	}
+	CloseResponseBodyGracefully(resp)
 	var errResponse dto.GeneralErrorResponse
-	err = json.Unmarshal(responseBody, &errResponse)
+	buildErrWithBody := func(message string) error {
+		if message == "" {
+			return fmt.Errorf("bad response status code %d, body: %s", resp.StatusCode, string(responseBody))
+		}
+		return fmt.Errorf("bad response status code %d, message: %s, body: %s", resp.StatusCode, message, string(responseBody))
+	}
+
+	err = common.Unmarshal(responseBody, &errResponse)
 	if err != nil {
 		if showBodyWhenFail {
-			errWithStatusCode.Error.Message = string(responseBody)
+			newApiErr.Err = buildErrWithBody("")
 		} else {
-			errWithStatusCode.Error.Message = fmt.Sprintf("bad response status code %d", resp.StatusCode)
-		}
-		if hideUpstream && resp.StatusCode != http.StatusTooManyRequests {
-			errWithStatusCode.Error.Message = fmt.Sprintf("Upstream error with status code %d", resp.StatusCode)
+			logger.LogError(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, string(responseBody)))
+			newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)
 		}
 		return
 	}
-	if errResponse.Error.Message != "" {
-		// OpenAI format error, so we override the default one
-		errWithStatusCode.Error = errResponse.Error
-	} else {
-		errWithStatusCode.Error.Message = errResponse.ToMessage()
+
+	if common.GetJsonType(errResponse.Error) == "object" {
+		// General format error (OpenAI, Anthropic, Gemini, etc.)
+		oaiError := errResponse.TryToOpenAIError()
+		if oaiError != nil {
+			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
+			if showBodyWhenFail {
+				newApiErr.Err = buildErrWithBody(newApiErr.Error())
+			}
+			return
+		}
 	}
-	if errWithStatusCode.Error.Message == "" {
-		errWithStatusCode.Error.Message = fmt.Sprintf("bad response status code %d", resp.StatusCode)
-	}
-	if hideUpstream && resp.StatusCode != http.StatusTooManyRequests {
-		errWithStatusCode.Error.Message = fmt.Sprintf("Upstream error with status code %d", resp.StatusCode)
+	newApiErr = types.NewOpenAIError(errors.New(errResponse.ToMessage()), types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
+	if showBodyWhenFail {
+		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
 }
 
-func ResetStatusCode(openaiErr *dto.OpenAIErrorWithStatusCode, statusCodeMappingStr string) {
+func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {
+	if newApiErr == nil {
+		return
+	}
 	if statusCodeMappingStr == "" || statusCodeMappingStr == "{}" {
 		return
 	}
-	statusCodeMapping := make(map[string]string)
-	err := json.Unmarshal([]byte(statusCodeMappingStr), &statusCodeMapping)
+	statusCodeMapping := make(map[string]any)
+	err := common.Unmarshal([]byte(statusCodeMappingStr), &statusCodeMapping)
 	if err != nil {
 		return
 	}
-	if openaiErr.StatusCode == http.StatusOK {
+	if newApiErr.StatusCode == http.StatusOK {
 		return
 	}
-	codeStr := strconv.Itoa(openaiErr.StatusCode)
-	if _, ok := statusCodeMapping[codeStr]; ok {
-		intCode, _ := strconv.Atoi(statusCodeMapping[codeStr])
-		openaiErr.StatusCode = intCode
+	codeStr := strconv.Itoa(newApiErr.StatusCode)
+	if value, ok := statusCodeMapping[codeStr]; ok {
+		intCode, ok := parseStatusCodeMappingValue(value)
+		if !ok {
+			return
+		}
+		newApiErr.StatusCode = intCode
+	}
+}
+
+func parseStatusCodeMappingValue(value any) (int, bool) {
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return 0, false
+		}
+		statusCode, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, false
+		}
+		return statusCode, true
+	case float64:
+		if v != math.Trunc(v) {
+			return 0, false
+		}
+		return int(v), true
+	case int:
+		return v, true
+	case json.Number:
+		statusCode, err := strconv.Atoi(v.String())
+		if err != nil {
+			return 0, false
+		}
+		return statusCode, true
+	default:
+		return 0, false
 	}
 }
 
@@ -166,7 +193,8 @@ func TaskErrorWrapper(err error, code string, statusCode int) *dto.TaskError {
 	lowerText := strings.ToLower(text)
 	if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
 		common.SysLog(fmt.Sprintf("error: %s", text))
-		text = "请求上游地址失败"
+		//text = "请求上游地址失败"
+		text = common.MaskSensitiveInfo(text)
 	}
 	//避免暴露内部错误
 	taskError := &dto.TaskError{
@@ -177,4 +205,17 @@ func TaskErrorWrapper(err error, code string, statusCode int) *dto.TaskError {
 	}
 
 	return taskError
+}
+
+// TaskErrorFromAPIError 将 PreConsumeBilling 返回的 NewAPIError 转换为 TaskError。
+func TaskErrorFromAPIError(apiErr *types.NewAPIError) *dto.TaskError {
+	if apiErr == nil {
+		return nil
+	}
+	return &dto.TaskError{
+		Code:       string(apiErr.GetErrorCode()),
+		Message:    apiErr.Err.Error(),
+		StatusCode: apiErr.StatusCode,
+		Error:      apiErr.Err,
+	}
 }

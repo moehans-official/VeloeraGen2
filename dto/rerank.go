@@ -1,29 +1,47 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package dto
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
+)
 
 type RerankRequest struct {
 	Documents       []any  `json:"documents"`
 	Query           string `json:"query"`
 	Model           string `json:"model"`
-	TopN            int    `json:"top_n"`
+	TopN            *int   `json:"top_n,omitempty"`
 	ReturnDocuments *bool  `json:"return_documents,omitempty"`
-	MaxChunkPerDoc  int    `json:"max_chunk_per_doc,omitempty"`
-	OverLapTokens   int    `json:"overlap_tokens,omitempty"`
+	MaxChunkPerDoc  *int   `json:"max_chunk_per_doc,omitempty"`
+	OverLapTokens   *int   `json:"overlap_tokens,omitempty"`
+}
+
+func (r *RerankRequest) IsStream(c *gin.Context) bool {
+	return false
+}
+
+func (r *RerankRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var texts = make([]string, 0)
+
+	for _, document := range r.Documents {
+		texts = append(texts, fmt.Sprintf("%v", document))
+	}
+
+	if r.Query != "" {
+		texts = append(texts, r.Query)
+	}
+
+	return &types.TokenCountMeta{
+		CombineText: strings.Join(texts, "\n"),
+	}
+}
+
+func (r *RerankRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		r.Model = modelName
+	}
 }
 
 func (r *RerankRequest) GetReturnDocuments() bool {

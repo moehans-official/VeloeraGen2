@@ -16,23 +16,24 @@ cd VeloeraGen2
 2. 准备环境变量
 
 ```bash
-cp .env.example .env
+# 生产环境建议使用 .env 存放敏感配置（如 SQL_DSN/SESSION_SECRET 等）
+# cp .env.example .env
 ```
 
-3. 构建并启动
+3. 修改 `docker-compose.yml`（生产环境务必修改默认密码/连接串）
+
+4. 启动
 
 ```bash
-docker pull veloerace/veloerace:latest
-# docker-compose.yml 默认 image 已配置为 veloerace/veloerace:latest
 docker compose up -d
 ```
 
-4. 检查容器与健康状态
+5. 检查容器与健康状态
 
 ```bash
 docker compose ps
-docker compose logs -f veloera
-curl http://localhost:3000/api/readyz
+docker compose logs -f new-api
+curl http://localhost:3000/api/status
 ```
 
 ## 2. 关键配置项
@@ -42,16 +43,16 @@ curl http://localhost:3000/api/readyz
 - `SQL_DSN`：主数据库连接串（MySQL/PostgreSQL）
 - `REDIS_CONN_STRING`：Redis 连接串
 - `SESSION_SECRET`：会话密钥（生产环境必须自定义）
-- `TRUSTED_PROXIES`：可信代理 CIDR/IP 列表
-- `SERVER_READ_TIMEOUT` / `SERVER_WRITE_TIMEOUT` / `SERVER_IDLE_TIMEOUT`
-- `SERVER_SHUTDOWN_TIMEOUT`
+- `SYNC_FREQUENCY`：数据库同步频率（秒）
+- `RELAY_TIMEOUT` / `STREAMING_TIMEOUT`：超时配置（秒）
+- `TLS_INSECURE_SKIP_VERIFY`：跳过 TLS 验证（谨慎使用）
 
 ## 3. 生产部署建议
 
 - 使用反向代理（Nginx/Caddy）处理 TLS
 - 将 `SESSION_SECRET`、数据库密码放入安全密钥管理
 - 为数据库与数据目录启用备份策略
-- 通过 `/api/healthz` 和 `/api/readyz` 接入监控/探针
+- 通过 `/api/status` 接入监控/探针
 - 开启 CI，确保每次变更可构建与可回归
 
 ## 4. 升级建议

@@ -1,34 +1,45 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package common
 
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 )
 
-func DecodeJson(data []byte, v any) error {
-	return json.NewDecoder(bytes.NewReader(data)).Decode(v)
+func Unmarshal(data []byte, v any) error {
+	return json.Unmarshal(data, v)
 }
 
-func DecodeJsonStr(data string, v any) error {
-	return DecodeJson(StringToByteSlice(data), v)
+func UnmarshalJsonStr(data string, v any) error {
+	return json.Unmarshal(StringToByteSlice(data), v)
 }
 
-func EncodeJson(v any) ([]byte, error) {
+func DecodeJson(reader io.Reader, v any) error {
+	return json.NewDecoder(reader).Decode(v)
+}
+
+func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+func GetJsonType(data json.RawMessage) string {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return "unknown"
+	}
+	firstChar := trimmed[0]
+	switch firstChar {
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	case '"':
+		return "string"
+	case 't', 'f':
+		return "boolean"
+	case 'n':
+		return "null"
+	default:
+		return "number"
+	}
 }

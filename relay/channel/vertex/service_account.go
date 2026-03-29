@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package vertex
 
 import (
@@ -22,12 +6,15 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"github.com/bytedance/gopkg/cache/asynccache"
-	"github.com/golang-jwt/jwt"
 	"net/http"
 	"net/url"
 	"strings"
-	relaycommon "veloera/relay/common"
+
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
+
+	"github.com/bytedance/gopkg/cache/asynccache"
+	"github.com/golang-jwt/jwt/v5"
 
 	"fmt"
 	"time"
@@ -51,7 +38,12 @@ var Cache = asynccache.NewAsyncCache(asynccache.Options{
 })
 
 func getAccessToken(a *Adaptor, info *relaycommon.RelayInfo) (string, error) {
-	cacheKey := fmt.Sprintf("access-token-%d", info.ChannelId)
+	var cacheKey string
+	if info.ChannelIsMultiKey {
+		cacheKey = fmt.Sprintf("access-token-%d-%d", info.ChannelId, info.ChannelMultiKeyIndex)
+	} else {
+		cacheKey = fmt.Sprintf("access-token-%d", info.ChannelId)
+	}
 	val, err := Cache.Get(cacheKey)
 	if err == nil {
 		return val.(string), nil
@@ -61,7 +53,7 @@ func getAccessToken(a *Adaptor, info *relaycommon.RelayInfo) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create signed JWT: %w", err)
 	}
-	newToken, err := exchangeJwtForAccessToken(signedJWT)
+	newToken, err := exchangeJwtForAccessToken(signedJWT, info)
 	if err != nil {
 		return "", fmt.Errorf("failed to exchange JWT for access token: %w", err)
 	}
@@ -112,14 +104,25 @@ func createSignedJWT(email, privateKeyPEM string) (string, error) {
 	return signedToken, nil
 }
 
-func exchangeJwtForAccessToken(signedJWT string) (string, error) {
+func exchangeJwtForAccessToken(signedJWT string, info *relaycommon.RelayInfo) (string, error) {
 
 	authURL := "https://www.googleapis.com/oauth2/v4/token"
 	data := url.Values{}
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
 	data.Set("assertion", signedJWT)
 
-	resp, err := http.PostForm(authURL, data)
+	var client *http.Client
+	var err error
+	if info.ChannelSetting.Proxy != "" {
+		client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
+		if err != nil {
+			return "", fmt.Errorf("new proxy http client failed: %w", err)
+		}
+	} else {
+		client = service.GetHttpClient()
+	}
+
+	resp, err := client.PostForm(authURL, data)
 	if err != nil {
 		return "", err
 	}
@@ -134,5 +137,47 @@ func exchangeJwtForAccessToken(signedJWT string) (string, error) {
 		return accessToken, nil
 	}
 
+	return "", fmt.Errorf("failed to get access token: %v", result)
+}
+
+func AcquireAccessToken(creds Credentials, proxy string) (string, error) {
+	signedJWT, err := createSignedJWT(creds.ClientEmail, creds.PrivateKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create signed JWT: %w", err)
+	}
+	return exchangeJwtForAccessTokenWithProxy(signedJWT, proxy)
+}
+
+func exchangeJwtForAccessTokenWithProxy(signedJWT string, proxy string) (string, error) {
+	authURL := "https://www.googleapis.com/oauth2/v4/token"
+	data := url.Values{}
+	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+	data.Set("assertion", signedJWT)
+
+	var client *http.Client
+	var err error
+	if proxy != "" {
+		client, err = service.NewProxyHttpClient(proxy)
+		if err != nil {
+			return "", fmt.Errorf("new proxy http client failed: %w", err)
+		}
+	} else {
+		client = service.GetHttpClient()
+	}
+
+	resp, err := client.PostForm(authURL, data)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if accessToken, ok := result["access_token"].(string); ok {
+		return accessToken, nil
+	}
 	return "", fmt.Errorf("failed to get access token: %v", result)
 }

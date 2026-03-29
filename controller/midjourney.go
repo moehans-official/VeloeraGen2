@@ -1,19 +1,3 @@
-// Copyright (c) 2025 Tethys Plex
-//
-// This file is part of Veloera.
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program. If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
@@ -21,17 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"io"
-	"log"
 	"net/http"
-	"strconv"
 	"time"
-	"veloera/common"
-	"veloera/dto"
-	"veloera/model"
-	"veloera/service"
-	"veloera/setting"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/system_setting"
+
+	"github.com/gin-gonic/gin"
 )
 
 func UpdateMidjourneyTaskBulk() {
@@ -45,7 +31,7 @@ func UpdateMidjourneyTaskBulk() {
 			continue
 		}
 
-		common.LogInfo(ctx, fmt.Sprintf("检测到未完成的任务数有: %v", len(tasks)))
+		logger.LogInfo(ctx, fmt.Sprintf("检测到未完成的任务数有: %v", len(tasks)))
 		taskChannelM := make(map[int][]string)
 		taskM := make(map[string]*model.Midjourney)
 		nullTaskIds := make([]int, 0)
@@ -64,9 +50,9 @@ func UpdateMidjourneyTaskBulk() {
 				"progress": "100%",
 			})
 			if err != nil {
-				common.LogError(ctx, fmt.Sprintf("Fix null mj_id task error: %v", err))
+				logger.LogError(ctx, fmt.Sprintf("Fix null mj_id task error: %v", err))
 			} else {
-				common.LogInfo(ctx, fmt.Sprintf("Fix null mj_id task success: %v", nullTaskIds))
+				logger.LogInfo(ctx, fmt.Sprintf("Fix null mj_id task success: %v", nullTaskIds))
 			}
 		}
 		if len(taskChannelM) == 0 {
@@ -74,20 +60,20 @@ func UpdateMidjourneyTaskBulk() {
 		}
 
 		for channelId, taskIds := range taskChannelM {
-			common.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
+			logger.LogInfo(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
 			if len(taskIds) == 0 {
 				continue
 			}
 			midjourneyChannel, err := model.CacheGetChannel(channelId)
 			if err != nil {
-				common.LogError(ctx, fmt.Sprintf("CacheGetChannel: %v", err))
+				logger.LogError(ctx, fmt.Sprintf("CacheGetChannel: %v", err))
 				err := model.MjBulkUpdate(taskIds, map[string]any{
 					"fail_reason": fmt.Sprintf("获取渠道信息失败，请联系管理员，渠道ID：%d", channelId),
 					"status":      "FAILURE",
 					"progress":    "100%",
 				})
 				if err != nil {
-					common.LogInfo(ctx, fmt.Sprintf("UpdateMidjourneyTask error: %v", err))
+					logger.LogInfo(ctx, fmt.Sprintf("UpdateMidjourneyTask error: %v", err))
 				}
 				continue
 			}
@@ -98,7 +84,7 @@ func UpdateMidjourneyTaskBulk() {
 			})
 			req, err := http.NewRequest("POST", requestUrl, bytes.NewBuffer(body))
 			if err != nil {
-				common.LogError(ctx, fmt.Sprintf("Get Task error: %v", err))
+				logger.LogError(ctx, fmt.Sprintf("Get Task error: %v", err))
 				continue
 			}
 			// 设置超时时间
@@ -110,22 +96,22 @@ func UpdateMidjourneyTaskBulk() {
 			req.Header.Set("mj-api-secret", midjourneyChannel.Key)
 			resp, err := service.GetHttpClient().Do(req)
 			if err != nil {
-				common.LogError(ctx, fmt.Sprintf("Get Task Do req error: %v", err))
+				logger.LogError(ctx, fmt.Sprintf("Get Task Do req error: %v", err))
 				continue
 			}
 			if resp.StatusCode != http.StatusOK {
-				common.LogError(ctx, fmt.Sprintf("Get Task status code: %d", resp.StatusCode))
+				logger.LogError(ctx, fmt.Sprintf("Get Task status code: %d", resp.StatusCode))
 				continue
 			}
 			responseBody, err := io.ReadAll(resp.Body)
 			if err != nil {
-				common.LogError(ctx, fmt.Sprintf("Get Task parse body error: %v", err))
+				logger.LogError(ctx, fmt.Sprintf("Get Mjp Task parse body error: %v", err))
 				continue
 			}
 			var responseItems []dto.MidjourneyDto
 			err = json.Unmarshal(responseBody, &responseItems)
 			if err != nil {
-				common.LogError(ctx, fmt.Sprintf("Get Task parse body error2: %v, body: %s", err, string(responseBody)))
+				logger.LogError(ctx, fmt.Sprintf("Get Mjp Task parse body error2: %v, body: %s", err, string(responseBody)))
 				continue
 			}
 			resp.Body.Close()
@@ -144,6 +130,7 @@ func UpdateMidjourneyTaskBulk() {
 				if !checkMjTaskNeedUpdate(task, responseItem) {
 					continue
 				}
+				preStatus := task.Status
 				task.Code = 1
 				task.Progress = responseItem.Progress
 				task.PromptEn = responseItem.PromptEn
@@ -162,26 +149,50 @@ func UpdateMidjourneyTaskBulk() {
 					buttonStr, _ := json.Marshal(responseItem.Buttons)
 					task.Buttons = string(buttonStr)
 				}
+				// 映射 VideoUrl
+				task.VideoUrl = responseItem.VideoUrl
+
+				// 映射 VideoUrls - 将数组序列化为 JSON 字符串
+				if responseItem.VideoUrls != nil && len(responseItem.VideoUrls) > 0 {
+					videoUrlsStr, err := json.Marshal(responseItem.VideoUrls)
+					if err != nil {
+						logger.LogError(ctx, fmt.Sprintf("序列化 VideoUrls 失败: %v", err))
+						task.VideoUrls = "[]" // 失败时设置为空数组
+					} else {
+						task.VideoUrls = string(videoUrlsStr)
+					}
+				} else {
+					task.VideoUrls = "" // 空值时清空字段
+				}
+
 				shouldReturnQuota := false
 				if (task.Progress != "100%" && responseItem.FailReason != "") || (task.Progress == "100%" && task.Status == "FAILURE") {
-					common.LogInfo(ctx, task.MjId+" 构建失败，"+task.FailReason)
+					logger.LogInfo(ctx, task.MjId+" 构建失败，"+task.FailReason)
 					task.Progress = "100%"
 					if task.Quota != 0 {
 						shouldReturnQuota = true
 					}
 				}
-				err = task.Update()
+				won, err := task.UpdateWithStatus(preStatus)
 				if err != nil {
-					common.LogError(ctx, "UpdateMidjourneyTask task error: "+err.Error())
-				} else {
-					if shouldReturnQuota {
-						err = model.IncreaseUserQuota(task.UserId, task.Quota, false)
-						if err != nil {
-							common.LogError(ctx, "fail to increase user quota: "+err.Error())
-						}
-						logContent := fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, common.LogQuota(task.Quota))
-						model.RecordLog(task.UserId, model.LogTypeSystem, logContent)
+					logger.LogError(ctx, "UpdateMidjourneyTask task error: "+err.Error())
+				} else if won && shouldReturnQuota {
+					err = model.IncreaseUserQuota(task.UserId, task.Quota, false)
+					if err != nil {
+						logger.LogError(ctx, "fail to increase user quota: "+err.Error())
 					}
+					model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+						UserId:    task.UserId,
+						LogType:   model.LogTypeRefund,
+						Content:   "",
+						ChannelId: task.ChannelId,
+						ModelName: service.CovertMjpActionToModelName(task.Action),
+						Quota:     task.Quota,
+						Other: map[string]interface{}{
+							"task_id": task.MjId,
+							"reason":  "构图失败",
+						},
+					})
 				}
 			}
 		}
@@ -225,15 +236,26 @@ func checkMjTaskNeedUpdate(oldTask *model.Midjourney, newTask dto.MidjourneyDto)
 	if oldTask.Progress != "100%" && newTask.FailReason != "" {
 		return true
 	}
+	// 检查 VideoUrl 是否需要更新
+	if oldTask.VideoUrl != newTask.VideoUrl {
+		return true
+	}
+	// 检查 VideoUrls 是否需要更新
+	if newTask.VideoUrls != nil && len(newTask.VideoUrls) > 0 {
+		newVideoUrlsStr, _ := json.Marshal(newTask.VideoUrls)
+		if oldTask.VideoUrls != string(newVideoUrlsStr) {
+			return true
+		}
+	} else if oldTask.VideoUrls != "" {
+		// 如果新数据没有 VideoUrls 但旧数据有，需要更新（清空）
+		return true
+	}
 
 	return false
 }
 
 func GetAllMidjourney(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
-	}
+	pageInfo := common.GetPageQuery(c)
 
 	// 解析其他查询参数
 	queryParams := model.TaskQueryParams{
@@ -243,31 +265,24 @@ func GetAllMidjourney(c *gin.Context) {
 		EndTimestamp:   c.Query("end_timestamp"),
 	}
 
-	logs := model.GetAllTasks(p*common.ItemsPerPage, common.ItemsPerPage, queryParams)
-	if logs == nil {
-		logs = make([]*model.Midjourney, 0)
-	}
+	items := model.GetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
+	total := model.CountAllTasks(queryParams)
+
 	if setting.MjForwardUrlEnabled {
-		for i, midjourney := range logs {
-			midjourney.ImageUrl = setting.ServerAddress + "/mj/image/" + midjourney.MjId
-			logs[i] = midjourney
+		for i, midjourney := range items {
+			midjourney.ImageUrl = system_setting.ServerAddress + "/mj/image/" + midjourney.MjId
+			items[i] = midjourney
 		}
 	}
-	c.JSON(200, gin.H{
-		"success": true,
-		"message": "",
-		"data":    logs,
-	})
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
 
 func GetUserMidjourney(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
-	}
+	pageInfo := common.GetPageQuery(c)
 
 	userId := c.GetInt("id")
-	log.Printf("userId = %d \n", userId)
 
 	queryParams := model.TaskQueryParams{
 		MjID:           c.Query("mj_id"),
@@ -275,19 +290,16 @@ func GetUserMidjourney(c *gin.Context) {
 		EndTimestamp:   c.Query("end_timestamp"),
 	}
 
-	logs := model.GetAllUserTask(userId, p*common.ItemsPerPage, common.ItemsPerPage, queryParams)
-	if logs == nil {
-		logs = make([]*model.Midjourney, 0)
-	}
+	items := model.GetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
+	total := model.CountAllUserTask(userId, queryParams)
+
 	if setting.MjForwardUrlEnabled {
-		for i, midjourney := range logs {
-			midjourney.ImageUrl = setting.ServerAddress + "/mj/image/" + midjourney.MjId
-			logs[i] = midjourney
+		for i, midjourney := range items {
+			midjourney.ImageUrl = system_setting.ServerAddress + "/mj/image/" + midjourney.MjId
+			items[i] = midjourney
 		}
 	}
-	c.JSON(200, gin.H{
-		"success": true,
-		"message": "",
-		"data":    logs,
-	})
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(items)
+	common.ApiSuccess(c, pageInfo)
 }
