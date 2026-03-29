@@ -1,6 +1,6 @@
 ﻿# 快速开始
 
-本文用于快速跑通 VeloeraCE。
+本文用于快速跑通 VeloeraGen2。
 
 ## 环境要求
 
@@ -12,8 +12,8 @@
 ## 方式一：Docker Compose（推荐）
 
 ```bash
-git clone https://github.com/moehans-official/VeloeraCE.git
-cd VeloeraCE
+git clone https://github.com/moehans-official/VeloeraGen2.git
+cd VeloeraGen2
 cp .env.example .env
 docker pull veloerace/veloerace:latest
 # docker-compose.yml 默认 image 已配置为 veloerace/veloerace:latest

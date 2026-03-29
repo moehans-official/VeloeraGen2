@@ -1,6 +1,6 @@
 ﻿<div align="center">
   <img src="https://cloudflareimg.cdn.sn/i/695929a70c0bc_1767451047.webp" alt="Veloera CE Logo" width="180" />
-  <h1>VeloeraCE</h1>
+  <h1>VeloeraGen2</h1>
   <p>Community-maintained Veloera, optimized for production operations</p>
   <p>
     <a href="./README.md">简体中文</a> | English
@@ -15,7 +15,7 @@
 
 ## Overview
 
-`VeloeraCE (Community Edition)` is a community-driven LLM API gateway evolved from `Veloera`.
+`VeloeraGen2 (Community Edition)` is a community-driven LLM API gateway evolved from `Veloera`.
 
 Project goals:
 
@@ -50,8 +50,8 @@ Upstream projects:
 1. Clone repository
 
 ```bash
-git clone https://github.com/moehans-official/VeloeraCE.git
-cd VeloeraCE
+git clone https://github.com/moehans-official/VeloeraGen2.git
+cd VeloeraGen2
 ```
 
 2. Prepare environment variables

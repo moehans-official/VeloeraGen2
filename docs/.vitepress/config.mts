@@ -1,10 +1,10 @@
 ﻿import { defineConfig } from 'vitepress';
 
 export default defineConfig({
-  title: 'VeloeraCE',
+  title: 'VeloeraGen2',
   description: 'Veloera Community Edition Documentation',
   lang: 'zh-CN',
-  base: '/VeloeraCE/',
+  base: '/VeloeraGen2/',
   cleanUrls: true,
   themeConfig: {
     nav: [
@@ -12,7 +12,7 @@ export default defineConfig({
       { text: '文档', link: '/guide/' },
       { text: 'API', link: '/api/' },
       { text: '致谢', link: '/thanks' },
-      { text: 'GitHub', link: 'https://github.com/moehans-official/VeloeraCE' },
+      { text: 'GitHub', link: 'https://github.com/moehans-official/VeloeraGen2' },
     ],
     sidebar: {
       '/guide/': [
@@ -32,10 +32,10 @@ export default defineConfig({
         },
       ],
     },
-    socialLinks: [{ icon: 'github', link: 'https://github.com/moehans-official/VeloeraCE' }],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/moehans-official/VeloeraGen2' }],
     footer: {
-      message: 'VeloeraCE Documentation',
-      copyright: `Copyright ${new Date().getFullYear()} VeloeraCE`,
+      message: 'VeloeraGen2 Documentation',
+      copyright: `Copyright ${new Date().getFullYear()} VeloeraGen2`,
     },
   },
 });

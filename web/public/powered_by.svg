@@ -51,7 +51,7 @@
   </g>
 
   <text x="28" y="20" class="badge-text">Powered by</text>
-  <text x="92" y="20" class="brand-text">VeloeraCE</text>
+  <text x="92" y="20" class="brand-text">VeloeraGen2</text>
 
   <circle cx="171" cy="16" r="2" class="badge-icon" opacity="0.6"/>
   <circle cx="176" cy="12" r="1" class="badge-icon" opacity="0.4"/>

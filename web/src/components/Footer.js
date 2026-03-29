@@ -21,15 +21,15 @@ import { getFooterHTML } from '../helpers';
 
 const FooterBar = () => {
   const [footer, setFooter] = useState(getFooterHTML());
-  const [poweredByText, setPoweredByText] = useState('Powered by VeloeraCE');
+  const [poweredByText, setPoweredByText] = useState('Powered by VeloeraGen2');
   let remainCheckTimes = 5;
 
   const poweredByTexts = [
-    '由 VeloeraCE 驱动',
-    'Powered by VeloeraCE',
-    'Built on VeloeraCE',
-    'Driven by VeloeraCE',
-    'Made with love by VeloeraCE',
+    '由 VeloeraGen2 驱动',
+    'Powered by VeloeraGen2',
+    'Built on VeloeraGen2',
+    'Driven by VeloeraGen2',
+    'Made with love by VeloeraGen2',
   ];
 
   const loadFooter = () => {
@@ -56,7 +56,7 @@ const FooterBar = () => {
 
   const PoweredByLink = (
     <a
-      href='https://github.com/moehans-official/VeloeraCE'
+      href='https://github.com/moehans-official/VeloeraGen2'
       target='_blank'
       rel='noreferrer'
       className='footer-powered-link'

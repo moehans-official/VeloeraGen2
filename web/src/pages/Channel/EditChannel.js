@@ -2010,7 +2010,7 @@ const updateModelsCallback = useCallback((newModels) => {
                 }}
                 onClick={() => {
                   window.open(
-                    'https://github.com/moehans-official/VeloeraCE/blob/main/new-api-stuffs/docs/channel/other_setting.md',
+                    'https://github.com/moehans-official/VeloeraGen2/blob/main/new-api-stuffs/docs/channel/other_setting.md',
                   );
                 }}
               >

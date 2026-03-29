@@ -52,14 +52,14 @@ const About = () => {
       {aboutLoaded && about === '' ? (
         <Layout>
           <Layout.Header>
-            <h3>关于 VeloeraCE</h3>
+            <h3>关于 VeloeraGen2</h3>
           </Layout.Header>
           <Layout.Content>
             <p>可在系统设置中配置 About 内容，支持 HTML 与 Markdown。</p>
             <p>
               项目仓库：
-              <a href='https://github.com/moehans-official/VeloeraCE' target='_blank' rel='noreferrer'>
-                https://github.com/moehans-official/VeloeraCE
+              <a href='https://github.com/moehans-official/VeloeraGen2' target='_blank' rel='noreferrer'>
+                https://github.com/moehans-official/VeloeraGen2
               </a>
             </p>
             <p>

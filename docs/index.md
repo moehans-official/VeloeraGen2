@@ -2,7 +2,7 @@
 layout: home
 
 hero:
-  name: "VeloeraCE"
+  name: "VeloeraGen2"
   text: "社区版文档中心"
   tagline: "面向生产可用的 LLM API 网关文档"
   actions:

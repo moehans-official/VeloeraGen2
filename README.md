@@ -48,8 +48,8 @@
 1. 克隆仓库
 
 ```bash
-git clone https://github.com/moehans-official/VeloeraCE.git
-cd VeloeraCE
+git clone https://github.com/moehans-official/VeloeraGen2.git
+cd VeloeraGen2
 ```
 
 2. 准备环境变量

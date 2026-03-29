@@ -1,6 +1,6 @@
 ﻿# 部署指南
 
-本文档提供 VeloeraCE 的部署建议，以 Docker Compose 为主。
+本文档提供 VeloeraGen2 的部署建议，以 Docker Compose 为主。
 
 ## 1. 单机部署（Docker Compose）
 
@@ -9,8 +9,8 @@
 1. 克隆仓库并进入目录
 
 ```bash
-git clone https://github.com/moehans-official/VeloeraCE.git
-cd VeloeraCE
+git clone https://github.com/moehans-official/VeloeraGen2.git
+cd VeloeraGen2
 ```
 
 2. 准备环境变量

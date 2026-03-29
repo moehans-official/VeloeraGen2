@@ -40,7 +40,7 @@ export function isRoot() {
 
 export function getSystemName() {
   let system_name = localStorage.getItem('system_name');
-  if (!system_name) return 'VeloeraCE';
+  if (!system_name) return 'VeloeraGen2';
   return system_name;
 }
 

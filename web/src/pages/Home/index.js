@@ -291,7 +291,7 @@ const Home = () => {
   const endpointUrl = `${normalizedServerAddress}${endpointPath}`;
   const docsLink = status.docs_link || localStorage.getItem('docs_link') || '';
   const systemName =
-    status.system_name || localStorage.getItem('system_name') || 'VeloeraCE';
+    status.system_name || localStorage.getItem('system_name') || 'VeloeraGen2';
   const version = status.version || text.unknown;
   const startTimeText = status.start_time
     ? timestamp2string(status.start_time)
